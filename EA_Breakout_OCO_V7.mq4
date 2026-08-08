@@ -973,7 +973,7 @@ void LogEvent(string eventName, string detail)
 void OpenTradeLoggerIfNeeded()
 {
    if(!EnableTradeLogger || g_tradeLogHandle != INVALID_HANDLE) return;
-   string fname = StringFormat("EA_V6_log_%s.csv", Symbol());
+   string fname = StringFormat("EA_V7_log_%s.csv", Symbol());
    g_tradeLogHandle = FileOpen(fname, FILE_CSV | FILE_READ | FILE_WRITE | FILE_SHARE_READ | FILE_SHARE_WRITE, ';');
    if(g_tradeLogHandle == INVALID_HANDLE) { ResetLastError(); return; }
    if(FileSize(g_tradeLogHandle) == 0)
@@ -2984,7 +2984,7 @@ void Dashboard_Update()
    g_dashLastUpdate = TimeCurrent();
 
    int line = 0;
-   Dash_Line(line++, StringFormat("=== %s v6.46 | %s M%d ===", EA_Name, Symbol(), Period()), Dash_ColorText);
+   Dash_Line(line++, StringFormat("=== %s v7.0 | %s M%d ===", EA_Name, Symbol(), Period()), Dash_ColorText);
    Dash_Line(line++, StringFormat("Preset: %s   State: %s", PresetName(), StateToString(g_state)), Dash_ColorText);
 
    int spread = SpreadPoints();
@@ -3088,7 +3088,7 @@ int OnInit()
 
    if(!AcquireSingleInstanceLock()) return(INIT_FAILED);
 
-   LogEvent("EA_INIT", StringFormat("V6.46|Preset=%s|MaxLoss=$%.1f SL=$%.1f RiskPct=%.2f|HedgeMaxNeg=$%.1f LotRatio=%.2f ConfirmBars=%d Cooldown=%ds|DailyDD=%.1f%% WeeklyLim=$%.0f|AutoLotMode=%s|Session=%s NewsFilter=%s (%d times)",
+   LogEvent("EA_INIT", StringFormat("V7.0|Preset=%s|MaxLoss=$%.1f SL=$%.1f RiskPct=%.2f|HedgeMaxNeg=$%.1f LotRatio=%.2f ConfirmBars=%d Cooldown=%ds|DailyDD=%.1f%% WeeklyLim=$%.0f|AutoLotMode=%s|Session=%s NewsFilter=%s (%d times)",
       PresetName(), P_MaxLossMoney, P_InitialSL_Dollar, P_RiskPercent,
       P_HedgeMaxNegDollar, P_HedgeLotRatio, HedgeMinConfirmBars, HedgeCooldownSec,
       P_MaxDailyDrawdownPct, MaxWeeklyLossMoney,
