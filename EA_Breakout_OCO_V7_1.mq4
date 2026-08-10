@@ -218,7 +218,7 @@ input bool     AutoRestartCycle          = true;
 input int      RestartDelaySeconds       = 300;    
 input int      PendingExpireMinutes      = 20;
 input bool     EnableCSVLog              = true;
-input string   CSV_FileName              = "EA_Breakout_OCO_V7_Behavior.csv";
+input string   CSV_FileName              = "EA_Breakout_OCO_V7_1_Behavior.csv";
 input bool     EnforceSingleInstance     = true;
 
 // --- Pending trail ---
@@ -3007,7 +3007,7 @@ void Dashboard_Update()
    g_dashLastUpdate = TimeCurrent();
 
    int line = 0;
-   Dash_Line(line++, StringFormat("=== %s v7.0 | %s M%d ===", EA_Name, Symbol(), Period()), Dash_ColorText);
+   Dash_Line(line++, StringFormat("=== %s v7.1 | %s M%d ===", EA_Name, Symbol(), Period()), Dash_ColorText);
    Dash_Line(line++, StringFormat("Preset: %s   State: %s", PresetName(), StateToString(g_state)), Dash_ColorText);
 
    int spread = SpreadPoints();
