@@ -141,8 +141,8 @@ input double   TimeExitMinProfit         = -1.0;
 input double   TimeExitMaxProfit         = 2.0;
 
 // --- [V7.1 NEW] Minus Block (hard, time-independent floating-loss circuit breaker) ---
-input bool     UseMinusBlock            = true;   // Tutup cycle SEGERA begitu floating loss tembus cap ini
-input double   MinusBlockUSD            = 20.0;   // Cap kerugian mutlak per cycle, tidak menunggu waktu/momentum
+input bool     UseMinusBlock            = true;   // Close the cycle IMMEDIATELY once floating loss breaches this cap
+input double   MinusBlockUSD            = 20.0;   // Absolute per-cycle loss cap; does not wait for hold time or momentum
 
 // --- Early Loss Cut ---
 input bool     UseEarlyLossCut          = false;  
