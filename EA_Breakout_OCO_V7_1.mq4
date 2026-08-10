@@ -1,6 +1,6 @@
 //+------------------------------------------------------------------+
-//| EA_Breakout_OCO_V7.mq4                                        |
-//| Breakout OCO Cycle Engine V7.0 (Optimized Risk/Trail)           |
+//| EA_Breakout_OCO_V7_1.mq4                                      |
+//| Breakout OCO Cycle Engine V7.1 (Hard Minus Block Patch)         |
 //+------------------------------------------------------------------+
 //
 // V7 CHANGELOG (from V6.47):
@@ -9,15 +9,27 @@
 // [V7-03] RSI entry gates: block BUY if RSI>70, block SELL if RSI<30; extreme pause RSI>75/<25
 // [V7-04] Time-based lot reduction: 50% lot reduction after hour 17:00 (MaxLossHourStart)
 // [V7-05] Order lifecycle logging: complete open/close trade logging with lifecycle markers
+//
+// V7.1 CHANGELOG (from V7.0) - based on EA_V7_log_XAUUSD.csv / EA_Breakout_OCO_V7_Behavior.csv analysis:
+// [V7.1-01] MINUS BLOCK: new unconditional, time-independent hard floating-loss circuit breaker
+//           (UseMinusBlock/MinusBlockUSD). Root cause found in live log: every losing trade only
+//           exited via "time_loss_exit", which is gated behind a 10-minute hold time. One trade
+//           ran to -$30.18 (2x the intended -$15 soft cap) before the time gate allowed the exit,
+//           because no unconditional loss stop existed between EarlyLossCut (disabled by default)
+//           and the much larger emergency_loss cap (~$50+ on AGGRESSIVE preset). MinusBlock now
+//           closes the cycle immediately, on every tick, the moment floating loss breaches the cap -
+//           independent of hold time, momentum/RSI confirmation, or profit-peak history.
+// [V7.1-02] MinusBlock check runs with top priority in ExitDecisionEngine, ahead of every other
+//           conditional loss-exit rule, so it can never be bypassed by those rules' extra conditions.
 //+------------------------------------------------------------------+
 #property strict
-#property version   "7.0"
-#property description "Breakout OCO V7 - Reversal Protection, ATR Lots, RSI Gates, Lifecycle Log"
+#property version   "7.1"
+#property description "Breakout OCO V7.1 - Hard Minus Block, Reversal Protection, ATR Lots, RSI Gates, Lifecycle Log"
 
 //============================== INPUTS ==============================
 // --- General ---
 input int      MagicNumber              = 9001060;
-input string   EA_Name                  = "EA_Breakout_OCO_V7";
+input string   EA_Name                  = "EA_Breakout_OCO_V7_1";
 input bool     PrintDebug               = true;
 
 // --- [V6-01] Preset Mode ------------------------------------------
@@ -127,6 +139,10 @@ input double   ProfitRatchetLockFraction = 0.50;
 input int      MaxHoldMinutes            = 60;
 input double   TimeExitMinProfit         = -1.0;
 input double   TimeExitMaxProfit         = 2.0;
+
+// --- [V7.1 NEW] Minus Block (hard, time-independent floating-loss circuit breaker) ---
+input bool     UseMinusBlock            = true;   // Tutup cycle SEGERA begitu floating loss tembus cap ini
+input double   MinusBlockUSD            = 20.0;   // Cap kerugian mutlak per cycle, tidak menunggu waktu/momentum
 
 // --- Early Loss Cut ---
 input bool     UseEarlyLossCut          = false;  
@@ -2520,6 +2536,15 @@ bool ExitDecisionEngine()
    UpdateProfitPeaks();
    UpdateRiskStatus();
 
+   // [V7.1-01] MINUS BLOCK: unconditional hard loss circuit breaker, highest priority.
+   // Unlike time_loss_exit (gated by hold time) or SoftSL/EarlyLossCut (gated by momentum/peak
+   // conditions), this closes the cycle the moment floating loss breaches MinusBlockUSD, on any tick,
+   // regardless of hold time, RSI momentum, or profit-peak history.
+   if(UseMinusBlock && profit <= -MinusBlockUSD)
+   { g_exitRequested = true; g_exitReason = "minus_block";
+     LogEvent("EXIT_MINUS_BLOCK", StringFormat("held=%d profit=%.2f cap=%.2f", heldMin, profit, MinusBlockUSD));
+     if(CloseAllPositions(g_exitReason)) { g_state = STATE_RESET; g_exitRequested = false; return true; } }
+
    if(IsReversalFlipPosition() && heldMin >= ReversalFastLossExit_Minutes && profit <= -ReversalFastLossExit_Dollar)
    {
       g_exitRequested = true; g_exitReason = "reversal_fast_loss_exit";
@@ -2984,7 +3009,7 @@ void Dashboard_Update()
    g_dashLastUpdate = TimeCurrent();
 
    int line = 0;
-   Dash_Line(line++, StringFormat("=== %s v7.0 | %s M%d ===", EA_Name, Symbol(), Period()), Dash_ColorText);
+   Dash_Line(line++, StringFormat("=== %s v7.1 | %s M%d ===", EA_Name, Symbol(), Period()), Dash_ColorText);
    Dash_Line(line++, StringFormat("Preset: %s   State: %s", PresetName(), StateToString(g_state)), Dash_ColorText);
 
    int spread = SpreadPoints();
@@ -3088,7 +3113,8 @@ int OnInit()
 
    if(!AcquireSingleInstanceLock()) return(INIT_FAILED);
 
-   LogEvent("EA_INIT", StringFormat("V7.0|Preset=%s|MaxLoss=$%.1f SL=$%.1f RiskPct=%.2f|HedgeMaxNeg=$%.1f LotRatio=%.2f ConfirmBars=%d Cooldown=%ds|DailyDD=%.1f%% WeeklyLim=$%.0f|AutoLotMode=%s|Session=%s NewsFilter=%s (%d times)",
+   LogEvent("EA_INIT", StringFormat("V7.1|MinusBlock=%s($%.1f)|Preset=%s|MaxLoss=$%.1f SL=$%.1f RiskPct=%.2f|HedgeMaxNeg=$%.1f LotRatio=%.2f ConfirmBars=%d Cooldown=%ds|DailyDD=%.1f%% WeeklyLim=$%.0f|AutoLotMode=%s|Session=%s NewsFilter=%s (%d times)",
+      UseMinusBlock ? "ON" : "OFF", MinusBlockUSD,
       PresetName(), P_MaxLossMoney, P_InitialSL_Dollar, P_RiskPercent,
       P_HedgeMaxNegDollar, P_HedgeLotRatio, HedgeMinConfirmBars, HedgeCooldownSec,
       P_MaxDailyDrawdownPct, MaxWeeklyLossMoney,
