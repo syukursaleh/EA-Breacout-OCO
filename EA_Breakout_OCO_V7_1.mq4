@@ -1,6 +1,6 @@
 //+------------------------------------------------------------------+
-//| EA_Breakout_OCO_V7.mq4                                        |
-//| Breakout OCO Cycle Engine V7.0 (Optimized Risk/Trail)           |
+//| EA_Breakout_OCO_V7_1.mq4                                      |
+//| Breakout OCO Cycle Engine V7.1 (CSV-analysis Hotfix)            |
 //+------------------------------------------------------------------+
 //
 // V7 CHANGELOG (from V6.47):
@@ -9,15 +9,27 @@
 // [V7-03] RSI entry gates: block BUY if RSI>70, block SELL if RSI<30; extreme pause RSI>75/<25
 // [V7-04] Time-based lot reduction: 50% lot reduction after hour 17:00 (MaxLossHourStart)
 // [V7-05] Order lifecycle logging: complete open/close trade logging with lifecycle markers
+//
+// V7.1 CHANGELOG (from analysis of EA_Breakout_OCO_V7_Behavior.csv & EA_V7_log_XAUUSD.csv):
+// [V7.1-01] FIX: HedgeBlockMinusMaxLossDollar (was 10.0) was smaller than the normal worst-case
+//           hedge loss (HedgeLotRatio x HedgeSL_Dollar x $/lot ~= 12-18), so HEDGE_BLOCK_MINUS_CAP
+//           fired on ~95% of all logged events (21031/22161 rows) and the hedge safety-net never
+//           actually opened in practice. Raised default to 20.0 so normal hedge sizing passes while
+//           still capping runaway lot sizes on deep pyramids.
+// [V7.1-02] FIX: Duplicate "open" rows in the trade CSV log. ReconcileTradeLifecycleLogs() ran before
+//           HandleOCOTriggered() in the same tick, so every OCO trigger produced both a
+//           FAILSAFE_RECOVER_OPEN row and a normal "BUY/SELL OCO" row for the same ticket. Reconcile
+//           now skips tickets that are the currently tracked pending buy/sell-stop tickets, letting
+//           the primary handler log them exactly once.
 //+------------------------------------------------------------------+
 #property strict
-#property version   "7.0"
-#property description "Breakout OCO V7 - Reversal Protection, ATR Lots, RSI Gates, Lifecycle Log"
+#property version   "7.1"
+#property description "Breakout OCO V7.1 - Hedge Cap Fix, Dedup Trade Log (patched from V7 CSV analysis)"
 
 //============================== INPUTS ==============================
 // --- General ---
 input int      MagicNumber              = 9001060;
-input string   EA_Name                  = "EA_Breakout_OCO_V7";
+input string   EA_Name                  = "EA_Breakout_OCO_V7_1";
 input bool     PrintDebug               = true;
 
 // --- [V6-01] Preset Mode ------------------------------------------
@@ -207,7 +219,7 @@ input bool     AutoRestartCycle          = true;
 input int      RestartDelaySeconds       = 300;    
 input int      PendingExpireMinutes      = 20;
 input bool     EnableCSVLog              = true;
-input string   CSV_FileName              = "EA_Breakout_OCO_V7_Behavior.csv";
+input string   CSV_FileName              = "EA_Breakout_OCO_V7_1_Behavior.csv";
 input bool     EnforceSingleInstance     = true;
 
 // --- Pending trail ---
@@ -289,7 +301,7 @@ input double   HedgeMaxNegDollar        = 10.0;
 input int      HedgePendingExpireSec    = 900;
 input int      HedgeMinConfirmBars      = 1;
 input int      HedgeCooldownSec         = 60;
-input double   HedgeBlockMinusMaxLossDollar = 10.0;
+input double   HedgeBlockMinusMaxLossDollar = 20.0;  // [V7.1-01] was 10.0: too low, blocked hedge ~95% of the time
 input double   HedgeBreakevenArmDollar  = 1.00;
 input double   HedgeGivebackCapDollar   = 1.50;
 
@@ -973,7 +985,7 @@ void LogEvent(string eventName, string detail)
 void OpenTradeLoggerIfNeeded()
 {
    if(!EnableTradeLogger || g_tradeLogHandle != INVALID_HANDLE) return;
-   string fname = StringFormat("EA_V7_log_%s.csv", Symbol());
+   string fname = StringFormat("%s_log_%s.csv", EA_Name, Symbol());
    g_tradeLogHandle = FileOpen(fname, FILE_CSV | FILE_READ | FILE_WRITE | FILE_SHARE_READ | FILE_SHARE_WRITE, ';');
    if(g_tradeLogHandle == INVALID_HANDLE) { ResetLastError(); return; }
    if(FileSize(g_tradeLogHandle) == 0)
@@ -1051,6 +1063,11 @@ void ReconcileTradeLifecycleLogs()
       if(OrderType() != OP_BUY && OrderType() != OP_SELL) continue;
       int tkt = OrderTicket();
       if(TradeLifecycleLogged("open", tkt)) continue;
+      // [V7.1-02] Skip tickets that are the currently tracked pending buy/sell-stop tickets:
+      // these are about to be (or just were) triggered and will be logged exactly once by
+      // HandleOCOTriggered() later in this same tick. Logging them here too caused duplicate
+      // "open" rows (FAILSAFE_RECOVER_OPEN + normal BUY/SELL OCO) for every single OCO trigger.
+      if(tkt == g_buyStopTicket || tkt == g_sellStopTicket) continue;
       string c = OrderComment();
       string t = DetectTradeType(c);
       LogTradeCSV(t, "open", tkt, OrderOpenPrice(), OrderLots(), OrderStopLoss(), OrderTakeProfit(), 0.0, "", "FAILSAFE_RECOVER_OPEN|" + c);
@@ -2984,7 +3001,7 @@ void Dashboard_Update()
    g_dashLastUpdate = TimeCurrent();
 
    int line = 0;
-   Dash_Line(line++, StringFormat("=== %s v7.0 | %s M%d ===", EA_Name, Symbol(), Period()), Dash_ColorText);
+   Dash_Line(line++, StringFormat("=== %s v7.1 | %s M%d ===", EA_Name, Symbol(), Period()), Dash_ColorText);
    Dash_Line(line++, StringFormat("Preset: %s   State: %s", PresetName(), StateToString(g_state)), Dash_ColorText);
 
    int spread = SpreadPoints();
@@ -3088,7 +3105,7 @@ int OnInit()
 
    if(!AcquireSingleInstanceLock()) return(INIT_FAILED);
 
-   LogEvent("EA_INIT", StringFormat("V7.0|Preset=%s|MaxLoss=$%.1f SL=$%.1f RiskPct=%.2f|HedgeMaxNeg=$%.1f LotRatio=%.2f ConfirmBars=%d Cooldown=%ds|DailyDD=%.1f%% WeeklyLim=$%.0f|AutoLotMode=%s|Session=%s NewsFilter=%s (%d times)",
+   LogEvent("EA_INIT", StringFormat("V7.1|Preset=%s|MaxLoss=$%.1f SL=$%.1f RiskPct=%.2f|HedgeMaxNeg=$%.1f LotRatio=%.2f ConfirmBars=%d Cooldown=%ds|DailyDD=%.1f%% WeeklyLim=$%.0f|AutoLotMode=%s|Session=%s NewsFilter=%s (%d times)",
       PresetName(), P_MaxLossMoney, P_InitialSL_Dollar, P_RiskPercent,
       P_HedgeMaxNegDollar, P_HedgeLotRatio, HedgeMinConfirmBars, HedgeCooldownSec,
       P_MaxDailyDrawdownPct, MaxWeeklyLossMoney,
