@@ -1,6 +1,6 @@
 //+------------------------------------------------------------------+
 //| EA_Breakout_OCO_V7.mq4                                        |
-//| Breakout OCO Cycle Engine V7.0 (Optimized Risk/Trail)           |
+//| Breakout OCO Cycle Engine V7.1 (Optimized Risk/Trail)           |
 //+------------------------------------------------------------------+
 //
 // V7 CHANGELOG (from V6.47):
@@ -9,10 +9,16 @@
 // [V7-03] RSI entry gates: block BUY if RSI>70, block SELL if RSI<30; extreme pause RSI>75/<25
 // [V7-04] Time-based lot reduction: 50% lot reduction after hour 17:00 (MaxLossHourStart)
 // [V7-05] Order lifecycle logging: complete open/close trade logging with lifecycle markers
+// V7.1 CHANGELOG (from V7.0), based on EA_Breakout_OCO_V7_1_Behavior.csv findings:
+// [V7.1-01] Fixed non-ASCII em-dash characters in LogEvent messages that rendered as
+//           mojibake (e.g. "M-bM-^@M-^T"/"�") in the MT4 terminal/CSV log output.
+// [V7.1-02] ModifySL now retries transient OrderModify failures (err=0/1/4/135/136/137/146),
+//           not just requote/invalid-stops (130/138), so break-even and hedge-giveback
+//           SL locks are no longer silently dropped when the broker returns a generic error.
 //+------------------------------------------------------------------+
 #property strict
-#property version   "7.0"
-#property description "Breakout OCO V7 - Reversal Protection, ATR Lots, RSI Gates, Lifecycle Log"
+#property version   "7.1"
+#property description "Breakout OCO V7.1 - Reversal Protection, ATR Lots, RSI Gates, Lifecycle Log"
 
 //============================== INPUTS ==============================
 // --- General ---
@@ -1167,7 +1173,7 @@ void CheckDailyLossLimit()
       if(g_consecLossHardStopped)
       {
          g_consecLossHardStopped = false;
-         LogEvent("CONSEC_LOSS_FULL_DAY_STOP_CLEARED", "real day rollover (no restart) — resuming new-cycle checks");
+         LogEvent("CONSEC_LOSS_FULL_DAY_STOP_CLEARED", "real day rollover (no restart) - resuming new-cycle checks");
       }
       PersistDailyBaseline();
    }
@@ -1176,7 +1182,7 @@ void CheckDailyLossLimit()
    {
       g_dailyLossPaused = false;
       PersistDailyBaseline();
-      LogEvent("DAILY_LOSS_LIMIT_STALE_CLEARED", "both daily limit toggles are off — clearing leftover pause from a previous session");
+      LogEvent("DAILY_LOSS_LIMIT_STALE_CLEARED", "both daily limit toggles are off - clearing leftover pause from a previous session");
    }
 
    double dailyPnL = AccountEquity() - g_dailyStartEquity;
@@ -1197,7 +1203,7 @@ void CheckDailyLossLimit()
    {
       g_dailyLossPaused = true;
       PersistDailyBaseline();
-      LogEvent("DAILY_LOSS_LIMIT", StringFormat("dailyPnL=%.2f limit=%.2f — PAUSED", dailyPnL, DailyLossLimit));
+      LogEvent("DAILY_LOSS_LIMIT", StringFormat("dailyPnL=%.2f limit=%.2f - PAUSED", dailyPnL, DailyLossLimit));
    }
 
    if(g_dailyLossPaused && (UseDailyLossLimit || UseDailyDrawdownPct) &&
@@ -1216,7 +1222,7 @@ void CheckWeeklyLossLimit()
       {
          g_weeklyLossPaused = false;
          PersistWeeklyBaseline();
-         LogEvent("WEEKLY_LOSS_LIMIT_STALE_CLEARED", "UseWeeklyLossLimit is off — clearing leftover pause from a previous session");
+         LogEvent("WEEKLY_LOSS_LIMIT_STALE_CLEARED", "UseWeeklyLossLimit is off - clearing leftover pause from a previous session");
       }
       return;
    }
@@ -1239,7 +1245,7 @@ void CheckWeeklyLossLimit()
    {
       g_weeklyLossPaused = true;
       PersistWeeklyBaseline();
-      LogEvent("WEEKLY_LOSS_LIMIT", StringFormat("wkPnL=%.2f limit=%.2f (%s) — PAUSED for week", wkPnL, weeklyLimitDollar,
+      LogEvent("WEEKLY_LOSS_LIMIT", StringFormat("wkPnL=%.2f limit=%.2f (%s) - PAUSED for week", wkPnL, weeklyLimitDollar,
                (UseWeeklyLossLimitPct ? StringFormat("%.1f%%", MaxWeeklyLossPct) : "fixed $")));
    }
    if(g_weeklyLossPaused && CountActivePositions() == 0 && CountPendingOrders() == 0)
@@ -1374,7 +1380,12 @@ bool ModifySL(int ticket, double newSL, string reason)
      g_lastActionTime = TimeCurrent(); ResetSLProtectionFailClock(ticket); return true; }
    int err = GetLastError();
    int    bufferSteps[4] = {3, 8, 20, 40};
-   for(int step = 0; step < 4 && (err == 130 || err == 138); step++)
+   int    step = 0;
+   // [V7.1-02] Retry on stop-level/requote errors (130/138) and on generic/transient
+   // failures (0/1/4/135/136/137/146) so break-even and hedge-giveback locks are not
+   // silently dropped, as observed in EA_Breakout_OCO_V7_1_Behavior.csv (SL_MODIFY_FAILED).
+   while(step < 4 && (err == 130 || err == 138 || err == 0 || err == 1 || err == 4 ||
+                     err == 135 || err == 136 || err == 137 || err == 146))
    {
       ResetLastError(); RefreshRates();
       double stopLevelPtsN = MathMax(MathMax(MarketInfo(Symbol(), MODE_STOPLEVEL), MarketInfo(Symbol(), MODE_FREEZELEVEL)), MinStopBufferPoints);
@@ -1387,6 +1398,7 @@ bool ModifySL(int ticket, double newSL, string reason)
       { LogEvent("SL_MODIFIED", StringFormat("ticket=%d oldSL=%.2f newSL=%.2f reason=%s (retry buf=%dpt)", ticket, oldSL, retrySL, reason, bufferSteps[step]));
         g_lastActionTime = TimeCurrent(); ResetSLProtectionFailClock(ticket); return true; }
       err = GetLastError();
+      step++;
    }
    static datetime lastSLFailLogTime = 0;
    if(TimeCurrent() - lastSLFailLogTime >= 15)
@@ -2112,7 +2124,7 @@ void HandleOCOTriggered()
    {
       if(P_UseReversalChaser)
          LogEvent("REVERSAL_CHASER_SKIPPED_COOLDOWN", StringFormat(
-                  "cooldownOk=%s flipsThisHour=%d/%d — deleting opposite leg instead",
+                  "cooldownOk=%s flipsThisHour=%d/%d - deleting opposite leg instead",
                   chaserCooldownOk ? "true" : "false", g_chaserFlipsThisWindow, ChaserMaxFlipsPerHour));
       DeleteOrderByTicket(oppositeTicket, (type == OP_BUY) ? "oco_buy_triggered" : "oco_sell_triggered");
    }
@@ -2750,7 +2762,7 @@ void RecordCycleResult(double cyclePnL)
          g_consecLossHardStopped = true;
          GlobalVariableSet(GVKey("consecHardStop"), 1.0);
          LogEvent("CONSEC_LOSS_FULL_DAY_STOP", StringFormat(
-                  "losses=%d threshold=%d — no new cycles until next calendar day",
+                  "losses=%d threshold=%d - no new cycles until next calendar day",
                   g_consecutiveLosses, P_HardStopFullDayThreshold));
       }
    }
@@ -2890,7 +2902,7 @@ void ApplyPreset()
       P_UseTrendFlipExit=false;
       P_EarlyLossCut_MaxLoss_WhileHedged = 8.0;
    }
-   // ===== AGGRESSIVE (PresetMode==3) — FILTER RELAXATION =====
+   // ===== AGGRESSIVE (PresetMode==3) - FILTER RELAXATION =====
    else if(PresetMode == 3)
    {
       // Risk sizing
@@ -2984,7 +2996,7 @@ void Dashboard_Update()
    g_dashLastUpdate = TimeCurrent();
 
    int line = 0;
-   Dash_Line(line++, StringFormat("=== %s v7.0 | %s M%d ===", EA_Name, Symbol(), Period()), Dash_ColorText);
+   Dash_Line(line++, StringFormat("=== %s v7.1 | %s M%d ===", EA_Name, Symbol(), Period()), Dash_ColorText);
    Dash_Line(line++, StringFormat("Preset: %s   State: %s", PresetName(), StateToString(g_state)), Dash_ColorText);
 
    int spread = SpreadPoints();
@@ -3088,7 +3100,7 @@ int OnInit()
 
    if(!AcquireSingleInstanceLock()) return(INIT_FAILED);
 
-   LogEvent("EA_INIT", StringFormat("V7.0|Preset=%s|MaxLoss=$%.1f SL=$%.1f RiskPct=%.2f|HedgeMaxNeg=$%.1f LotRatio=%.2f ConfirmBars=%d Cooldown=%ds|DailyDD=%.1f%% WeeklyLim=$%.0f|AutoLotMode=%s|Session=%s NewsFilter=%s (%d times)",
+   LogEvent("EA_INIT", StringFormat("V7.1|Preset=%s|MaxLoss=$%.1f SL=$%.1f RiskPct=%.2f|HedgeMaxNeg=$%.1f LotRatio=%.2f ConfirmBars=%d Cooldown=%ds|DailyDD=%.1f%% WeeklyLim=$%.0f|AutoLotMode=%s|Session=%s NewsFilter=%s (%d times)",
       PresetName(), P_MaxLossMoney, P_InitialSL_Dollar, P_RiskPercent,
       P_HedgeMaxNegDollar, P_HedgeLotRatio, HedgeMinConfirmBars, HedgeCooldownSec,
       P_MaxDailyDrawdownPct, MaxWeeklyLossMoney,
