@@ -1381,10 +1381,10 @@ bool ModifySL(int ticket, double newSL, string reason)
    int err = GetLastError();
    int    bufferSteps[4] = {3, 8, 20, 40};
    int    step = 0;
-   // [V7.1-02] Retry on stop-level/requote errors (130/138) and on generic/transient
-   // failures (0/1/4/135/136/137/146) so break-even and hedge-giveback locks are not
-   // silently dropped, as observed in EA_Breakout_OCO_V7_1_Behavior.csv (SL_MODIFY_FAILED).
-   while(step < 4 && (err == 130 || err == 138 || err == 0 || err == 1 || err == 4 ||
+   // [V7.1-02] Retry on stop-level/requote errors (130/138) and on other common transient
+   // OrderModify failures (1/4/135/136/137/146) so break-even and hedge-giveback locks are
+   // not silently dropped, as observed in EA_Breakout_OCO_V7_1_Behavior.csv (SL_MODIFY_FAILED).
+   while(step < 4 && (err == 130 || err == 138 || err == 1 || err == 4 ||
                      err == 135 || err == 136 || err == 137 || err == 146))
    {
       ResetLastError(); RefreshRates();
