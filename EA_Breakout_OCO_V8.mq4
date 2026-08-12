@@ -1,6 +1,6 @@
 //+------------------------------------------------------------------+
-//| EA_Breakout_OCO_V7_1.mq4                                      |
-//| Breakout OCO Cycle Engine V7.1 (CSV-analysis Hotfix)            |
+//| EA_Breakout_OCO_V8.mq4                                        |
+//| Breakout OCO Cycle Engine V8 (CSV-analysis Hardening)           |
 //+------------------------------------------------------------------+
 //
 // V7 CHANGELOG (from V6.47):
@@ -29,7 +29,7 @@
 // flips (REVERSAL_FLIP/reversal_chaser_flip) always closed at a loss; hedge exits were always
 // profitable but small, suggesting the giveback cap closes hedges too early.
 // [V8-01] (Priority 1) time_loss_exit redesign: instead of a blind timeout+loss cutoff, the timeout
-//         now locks in profit if already non-negative ("time_exit_profit_lock"), requires momentum
+//         now locks in profit if already positive ("time_exit_profit_lock"), requires momentum
 //         confirmation (RSI against position) before cutting at the normal loss threshold
 //         ("time_loss_exit_confirmed"), and keeps a wider hard-cap safety net so runaway losses are
 //         still cut even without confirmation ("time_loss_exit_hardcap").
@@ -249,7 +249,7 @@ input bool     AutoRestartCycle          = true;
 input int      RestartDelaySeconds       = 300;    
 input int      PendingExpireMinutes      = 20;
 input bool     EnableCSVLog              = true;
-input string   CSV_FileName              = "EA_Breakout_OCO_V7_1_Behavior.csv";
+input string   CSV_FileName              = "EA_Breakout_OCO_V8_Behavior.csv";
 input bool     EnforceSingleInstance     = true;
 
 // --- Pending trail ---
@@ -2671,7 +2671,7 @@ bool ExitDecisionEngine()
    // 3) Regardless of confirmation, cut once the loss reaches a wider hard-cap safety net.
    if(heldMin >= TimeLossExitMinutes)
    {
-      if(profit >= 0)
+      if(profit > 0.0)
       { g_exitRequested = true; g_exitReason = "time_exit_profit_lock";
         LogEvent("EXIT_TIME_PROFIT_LOCK", StringFormat("held=%d profit=%.2f", heldMin, profit));
         if(CloseAllPositions(g_exitReason)) { g_state = STATE_RESET; g_exitRequested = false; return true; } }
@@ -3067,7 +3067,7 @@ void Dashboard_Update()
    g_dashLastUpdate = TimeCurrent();
 
    int line = 0;
-   Dash_Line(line++, StringFormat("=== %s v7.1 | %s M%d ===", EA_Name, Symbol(), Period()), Dash_ColorText);
+   Dash_Line(line++, StringFormat("=== %s v8.0 | %s M%d ===", EA_Name, Symbol(), Period()), Dash_ColorText);
    Dash_Line(line++, StringFormat("Preset: %s   State: %s", PresetName(), StateToString(g_state)), Dash_ColorText);
 
    int spread = SpreadPoints();
@@ -3171,7 +3171,7 @@ int OnInit()
 
    if(!AcquireSingleInstanceLock()) return(INIT_FAILED);
 
-   LogEvent("EA_INIT", StringFormat("V7.1|Preset=%s|MaxLoss=$%.1f SL=$%.1f RiskPct=%.2f|HedgeMaxNeg=$%.1f LotRatio=%.2f ConfirmBars=%d Cooldown=%ds|DailyDD=%.1f%% WeeklyLim=$%.0f|AutoLotMode=%s|Session=%s NewsFilter=%s (%d times)",
+   LogEvent("EA_INIT", StringFormat("V8|Preset=%s|MaxLoss=$%.1f SL=$%.1f RiskPct=%.2f|HedgeMaxNeg=$%.1f LotRatio=%.2f ConfirmBars=%d Cooldown=%ds|DailyDD=%.1f%% WeeklyLim=$%.0f|AutoLotMode=%s|Session=%s NewsFilter=%s (%d times)",
       PresetName(), P_MaxLossMoney, P_InitialSL_Dollar, P_RiskPercent,
       P_HedgeMaxNegDollar, P_HedgeLotRatio, HedgeMinConfirmBars, HedgeCooldownSec,
       P_MaxDailyDrawdownPct, MaxWeeklyLossMoney,
