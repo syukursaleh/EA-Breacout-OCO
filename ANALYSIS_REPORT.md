@@ -62,6 +62,9 @@ Basis: copy dari `EA_Breakout_OCO_V8.mq4`, lalu tuning minimal namun terarah dat
 - `TimeLossExitMinutes`: **10 → 8**
 - `TimeLossExitUSD`: **15.0 → 12.0**
 - `TimeLossExit_HardMultiplier`: **1.5 → 1.3**
+- `TimeProfitLockMinutes`: **20** (baru, supaya profit lock tidak terlalu awal)
+- `TimeProfitLockMinProfit`: **4.0** (baru)
+- `TimeProfitLockMinGiveback`: **1.0** (baru, lock profit hanya bila ada retrace)
 
 **Alasan:** mengurangi keterlambatan cut-loss yang pada data jadi kontributor rugi terbesar.
 
@@ -73,12 +76,23 @@ Basis: copy dari `EA_Breakout_OCO_V8.mq4`, lalu tuning minimal namun terarah dat
 
 **Alasan:** cooldown ringan selepas rugi untuk memutus loss clustering sebelum mencapai hard-stop beruntun.
 
-### 3.4 Risk scaling SELL
+### 3.4 Konsistensi cap loss awal per kondisi hedge
+- `ApplyEarlyLossHardSL()` kini pakai:
+  - `EarlyLossCut_MaxLoss` saat **tidak** ada hedge aktif
+  - `EarlyLossCut_MaxLoss_WhileHedged` saat hedge aktif
+
+**Alasan:** kedua parameter cap loss kini benar-benar dipakai sesuai konteks risiko posisi.
+
+### 3.5 Risk scaling SELL
 - `SellLotMult`: **0.85 → 0.75**
+- Penerapan lot SELL tereduksi juga diselaraskan pada path `PlaceOCOOrders()` (non-directional), bukan hanya `PlaceDirectionalOCO()`
 
 **Alasan:** data menunjukkan SELL masih sisi yang lebih lemah; lot SELL diperkecil untuk menurunkan downside tail risk.
 
-### 3.5 Metadata/version update
+### 3.6 Stabilitas baseline mingguan
+- Perhitungan anchor hari Isnin/Monday diperbaiki untuk kes **Sunday (`TimeDayOfWeek==0`)** supaya baseline mingguan tetap mengacu ke Isnin minggu berjalan.
+
+### 3.7 Metadata/version update
 - File baru: `EA_Breakout_OCO_V9.mq4`
 - `#property version`: `9.0`
 - `EA_Name`: `EA_Breakout_OCO_V9`
@@ -88,4 +102,3 @@ Basis: copy dari `EA_Breakout_OCO_V8.mq4`, lalu tuning minimal namun terarah dat
 ## 4) Catatan OCO Core Strategy
 - Core breakout + OCO tetap dipertahankan.
 - Logik OCO cancel lawan saat trigger tetap digunakan dari V8 (tidak dirombak total), perubahan difokuskan ke quality filter, risk, dan loss-exit sesuai pola CSV.
-

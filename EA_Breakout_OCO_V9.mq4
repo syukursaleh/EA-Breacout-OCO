@@ -186,6 +186,9 @@ input int      TimeLossExitMinutes      = 8;       // [V9-03] reduce exposure ti
 input double   TimeLossExitUSD          = 12.0;    // [V9-03] earlier time-based protection
 input double   TimeLossExit_RSIConfirm  = 55.0;    // [V8-01] RSI momentum confirmation required before cutting at TimeLossExitUSD
 input double   TimeLossExit_HardMultiplier = 1.3;  // [V9-03] tighter hard-cap for lingering losers
+input int      TimeProfitLockMinutes    = 20;      // [V9-06] avoid locking small winners too early
+input double   TimeProfitLockMinProfit  = 4.0;     // [V9-06] only lock if unrealized gain is meaningful
+input double   TimeProfitLockMinGiveback = 1.0;    // [V9-06] require retrace from peak before locking
 
 // --- [V6.46 NEW] Time-based Lot Reduction ---
 input int      MaxLossHourStart         = 17;      // Reduksi lot 50% setelah jam 17:00 (post-NY)
@@ -498,7 +501,7 @@ int        g_dailyLosses = 0;
 
 // --- Dashboard ---
 datetime   g_dashLastUpdate = 0;
-string     g_dashPrefix = "V6DASH_";
+string     g_dashPrefix = "V9DASH_";
 int        g_dashLineCount = 0;
 
 //============================== HELPERS ==============================
@@ -1276,7 +1279,8 @@ void CheckWeeklyLossLimit()
    }
    datetime now = TimeCurrent();
    int dow = TimeDayOfWeek(now);
-   datetime monday = now - dow * 86400;
+   int daysFromMonday = (dow + 6) % 7;
+   datetime monday = now - daysFromMonday * 86400;
    datetime mondayStart = StringToTime(TimeToString(monday, TIME_DATE));
    if(g_weeklyStartDay != mondayStart)
    {
@@ -1344,7 +1348,8 @@ void LoadOrInitDailyBaseline()
 void LoadOrInitWeeklyBaseline()
 {
    int dow = TimeDayOfWeek(TimeCurrent());
-   datetime monday = TimeCurrent() - dow * 86400;
+   int daysFromMonday = (dow + 6) % 7;
+   datetime monday = TimeCurrent() - daysFromMonday * 86400;
    datetime mondayStart = StringToTime(TimeToString(monday, TIME_DATE));
    if(GlobalVariableCheck(GVKey("weekDay")) && (datetime)GlobalVariableGet(GVKey("weekDay")) == mondayStart)
    {
@@ -1844,14 +1849,16 @@ bool PlaceOCOOrders()
    for(int i=OrdersTotal()-1;i>=0;i--)
    { if(!OrderSelect(i,SELECT_BY_POS,MODE_TRADES)) continue;
      if(OrderSymbol()==Symbol()&&OrderMagicNumber()==MagicNumber&&OrderType()==OP_BUYSTOP){buyTicket=OrderTicket();break;} }
-   if(!OrderSendWithRetry(Symbol(),OP_SELLSTOP,lot,sellP,SlippagePoints,sellSL,sellTP,EA_Name+" SellStop",MagicNumber,0,clrRed))
+   double sellLot = NormalizeLot(lot * SellLotMult);
+   if(sellLot <= 0.0) sellLot = lot;
+   if(!OrderSendWithRetry(Symbol(),OP_SELLSTOP,sellLot,sellP,SlippagePoints,sellSL,sellTP,EA_Name+" SellStop",MagicNumber,0,clrRed))
    { if(buyTicket>0) DeleteOrderByTicket(buyTicket,"oco_incomplete"); g_buyStopTicket=-1;g_sellStopTicket=-1; return false; }
    g_buyStopTicket=buyTicket; g_sellStopTicket=-1;
    for(int i=OrdersTotal()-1;i>=0;i--)
    { if(!OrderSelect(i,SELECT_BY_POS,MODE_TRADES)) continue;
      if(OrderSymbol()==Symbol()&&OrderMagicNumber()==MagicNumber&&OrderType()==OP_SELLSTOP){g_sellStopTicket=OrderTicket();break;} }
    g_state=STATE_WAIT_TRIGGER;g_cycleStartTime=TimeCurrent();g_lastActionTime=TimeCurrent();
-   LogEvent("OCO_PLACED",StringFormat("buy=%d %.2f sell=%d %.2f lot=%.2f dist=%.2f",g_buyStopTicket,buyP,g_sellStopTicket,sellP,lot,dist));
+   LogEvent("OCO_PLACED",StringFormat("buy=%d %.2f lot=%.2f sell=%d %.2f lot=%.2f dist=%.2f",g_buyStopTicket,buyP,lot,g_sellStopTicket,sellP,sellLot,dist));
    return true;
 }
 
@@ -1862,9 +1869,9 @@ bool PlaceDirectionalOCO(int trend)
    double lot=CalculateTradeLot("PLACE_OCO_DIR"); if(lot<=0.0) return false;
    double dist=CalculatePendingDistance();
    double slDol=GetActiveSLDollar();
-   double counterLot = NormalizeLot(lot * CounterSideLotMult);
    if(trend==1)
    {
+      double counterLot = NormalizeLot(lot * CounterSideLotMult);
       double buyP=NormalizePrice(Ask+dist), buySL=NormalizePrice(buyP-slDol), buyTP=CalculateTakeProfit(buyP,1);
       if(!OrderSendWithRetry(Symbol(),OP_BUYSTOP,lot,buyP,SlippagePoints,buySL,buyTP,EA_Name+" Bull BuyStop",MagicNumber,0,clrBlue))
       { LogEvent("DIR_OCO_BUY_FAILED",StringFormat("price=%.2f err=%d",buyP,GetLastError())); return false; }
@@ -1887,6 +1894,7 @@ bool PlaceDirectionalOCO(int trend)
    else
    {
       double sellLot = NormalizeLot(lot * SellLotMult); // [V8-06] scale down SELL main lot; SELL underperformed BUY in V6/V7 logs
+      double counterLot = NormalizeLot(sellLot * CounterSideLotMult);
       double sellP=NormalizePrice(Bid-dist), sellSL=NormalizePrice(sellP+slDol), sellTP=CalculateTakeProfit(sellP,-1);
       if(!OrderSendWithRetry(Symbol(),OP_SELLSTOP,sellLot,sellP,SlippagePoints,sellSL,sellTP,EA_Name+" Bear SellStop",MagicNumber,0,clrRed))
       { LogEvent("DIR_OCO_SELL_FAILED",StringFormat("price=%.2f err=%d",sellP,GetLastError())); return false; }
@@ -2497,7 +2505,9 @@ void ApplyProfitRatchetSL()
 void ApplyEarlyLossHardSL()
 {
    if(!UseEarlyLossCut) return;
-   double effectiveMaxLoss = P_EarlyLossCut_MaxLoss_WhileHedged;
+   bool hedgeActive = (g_hedgeTicket > 0 && OrderSelect(g_hedgeTicket, SELECT_BY_TICKET) &&
+                       (OrderType() == OP_BUY || OrderType() == OP_SELL) && OrderCloseTime() == 0);
+   double effectiveMaxLoss = hedgeActive ? P_EarlyLossCut_MaxLoss_WhileHedged : EarlyLossCut_MaxLoss;
    if(g_peakProfitMoney >= EarlyLossCut_NoPeakAbove) return;
 
    double mpp = MoneyPerPriceUnitPerLot();
@@ -2595,7 +2605,7 @@ bool ExitDecisionEngine()
    if(UseSoftSL_Momentum && profit <= -SoftSL_USD) {
       double rsiNow = iRSI(Symbol(), PERIOD_M5, RSI_Period, PRICE_CLOSE, 0);
       bool momentumAgainst = (g_positionDirection == 1 && rsiNow < SoftSL_RSIThresh) ||
-                             (g_positionDirection == -1 && rsiNow > (100 - SoftSL_RSIThresh));
+                             (g_positionDirection == -1 && rsiNow > SoftSL_RSIThresh);
       if(momentumAgainst) {
          g_exitRequested = true; g_exitReason = "soft_sl_momentum";
          LogEvent("EXIT_SOFT_SL_MOMENTUM", StringFormat("profit=%.2f rsi=%.1f dir=%d", profit, rsiNow, g_positionDirection));
@@ -2628,7 +2638,9 @@ bool ExitDecisionEngine()
    else if(UseV1DProfitLockGuard && g_peakProfitMoney >= V1D_MinProfitPeakForTightLoss)
       dynamicMaxLoss = MathMin(dynamicMaxLoss, V1D_TightLossAfterSmallPeak);
 
-   double effectiveEarlyLossCap = P_EarlyLossCut_MaxLoss_WhileHedged;
+   bool hedgeActiveNow = (g_hedgeTicket > 0 && OrderSelect(g_hedgeTicket, SELECT_BY_TICKET) &&
+                         (OrderType() == OP_BUY || OrderType() == OP_SELL) && OrderCloseTime() == 0);
+   double effectiveEarlyLossCap = hedgeActiveNow ? P_EarlyLossCut_MaxLoss_WhileHedged : EarlyLossCut_MaxLoss;
    if(UseEarlyLossCut && g_peakProfitMoney < EarlyLossCut_NoPeakAbove && profit <= -effectiveEarlyLossCap)
    { g_exitRequested = true; g_exitReason = "early_loss_cut";
      LogEvent("EXIT_EARLY_LOSS_CUT", StringFormat("profit=%.2f peak=%.2f cap=%.2f", profit, g_peakProfitMoney, effectiveEarlyLossCap));
@@ -2670,26 +2682,29 @@ bool ExitDecisionEngine()
    // 1) If held past timeout and already flat/profit, lock it in instead of waiting for a reversal.
    // 2) If held past timeout and losing, require RSI momentum confirmation before cutting normally.
    // 3) Regardless of confirmation, cut once the loss reaches a wider hard-cap safety net.
-   if(heldMin >= TimeLossExitMinutes)
+   double profitGiveback = g_peakProfitMoney - profit;
+   if(heldMin >= TimeProfitLockMinutes &&
+      profit >= TimeProfitLockMinProfit &&
+      profitGiveback >= TimeProfitLockMinGiveback)
    {
-      if(profit > 0.0)
-      { g_exitRequested = true; g_exitReason = "time_exit_profit_lock";
-        LogEvent("EXIT_TIME_PROFIT_LOCK", StringFormat("held=%d profit=%.2f", heldMin, profit));
+      g_exitRequested = true; g_exitReason = "time_exit_profit_lock";
+      LogEvent("EXIT_TIME_PROFIT_LOCK", StringFormat("held=%d profit=%.2f peak=%.2f giveback=%.2f",
+               heldMin, profit, g_peakProfitMoney, profitGiveback));
+      if(CloseAllPositions(g_exitReason)) { g_state = STATE_RESET; g_exitRequested = false; return true; }
+   }
+   else if(heldMin >= TimeLossExitMinutes && profit <= 0.0)
+   {
+      double rsiTL = iRSI(Symbol(), PERIOD_M5, RSI_Period, PRICE_CLOSE, 0);
+      bool momentumAgainstTL = (g_positionDirection == 1 && rsiTL < TimeLossExit_RSIConfirm) ||
+                               (g_positionDirection == -1 && rsiTL > TimeLossExit_RSIConfirm);
+      if(profit <= -TimeLossExitUSD && momentumAgainstTL)
+      { g_exitRequested = true; g_exitReason = "time_loss_exit_confirmed";
+        LogEvent("EXIT_TIME_LOSS_CONFIRMED", StringFormat("held=%d profit=%.2f rsi=%.1f", heldMin, profit, rsiTL));
         if(CloseAllPositions(g_exitReason)) { g_state = STATE_RESET; g_exitRequested = false; return true; } }
-      else
-      {
-         double rsiTL = iRSI(Symbol(), PERIOD_M5, RSI_Period, PRICE_CLOSE, 0);
-         bool momentumAgainstTL = (g_positionDirection == 1 && rsiTL < TimeLossExit_RSIConfirm) ||
-                                  (g_positionDirection == -1 && rsiTL > (100 - TimeLossExit_RSIConfirm));
-         if(profit <= -TimeLossExitUSD && momentumAgainstTL)
-         { g_exitRequested = true; g_exitReason = "time_loss_exit_confirmed";
-           LogEvent("EXIT_TIME_LOSS_CONFIRMED", StringFormat("held=%d profit=%.2f rsi=%.1f", heldMin, profit, rsiTL));
-           if(CloseAllPositions(g_exitReason)) { g_state = STATE_RESET; g_exitRequested = false; return true; } }
-         else if(profit <= -TimeLossExitUSD * TimeLossExit_HardMultiplier)
-         { g_exitRequested = true; g_exitReason = "time_loss_exit_hardcap";
-           LogEvent("EXIT_TIME_LOSS_HARDCAP", StringFormat("held=%d profit=%.2f rsi=%.1f", heldMin, profit, rsiTL));
-           if(CloseAllPositions(g_exitReason)) { g_state = STATE_RESET; g_exitRequested = false; return true; } }
-      }
+      else if(profit <= -TimeLossExitUSD * TimeLossExit_HardMultiplier)
+      { g_exitRequested = true; g_exitReason = "time_loss_exit_hardcap";
+        LogEvent("EXIT_TIME_LOSS_HARDCAP", StringFormat("held=%d profit=%.2f rsi=%.1f", heldMin, profit, rsiTL));
+        if(CloseAllPositions(g_exitReason)) { g_state = STATE_RESET; g_exitRequested = false; return true; } }
    }
 
    g_exitRequested = false;
@@ -3075,7 +3090,7 @@ void Dashboard_Update()
    g_dashLastUpdate = TimeCurrent();
 
    int line = 0;
-   Dash_Line(line++, StringFormat("=== %s v8.0 | %s M%d ===", EA_Name, Symbol(), Period()), Dash_ColorText);
+   Dash_Line(line++, StringFormat("=== %s | %s M%d ===", EA_Name, Symbol(), Period()), Dash_ColorText);
    Dash_Line(line++, StringFormat("Preset: %s   State: %s", PresetName(), StateToString(g_state)), Dash_ColorText);
 
    int spread = SpreadPoints();
