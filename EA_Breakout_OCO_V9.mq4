@@ -167,6 +167,8 @@ input double   TrailRetracePct_Med       = 25.0;   // [V6.46 FIX] 40.0 -> 25.0
 input double   TrailRetracePct_Large     = 20.0;   // [V6.46 FIX] 25.0 -> 20.0
 input double   HighPeakThreshold         = 10.0;   // [V9.1-03]
 input double   HighPeakRetracePct        = 12.0;   // [V9.1-03]
+input double   LosingLegWorstThreshold_USD = 5.0;  // [V9.1-03] positive USD magnitude; logic compares worst < -threshold
+input double   LosingLegTrailTightenFactor = 0.70; // [V9.1-03]
 input bool     UseTrendAdaptiveTrail     = true;
 input double   TrendIntactTrailMult      = 1.30;
 input double   TrendWeakTrailMult        = 0.60;
@@ -718,10 +720,11 @@ double CalculateTradeLot(string context)
    }
 
    int spreadNow = SpreadPoints(); // [V9.1-01]
-   if(P_MaxSpreadPoints > NormalSpreadPoints && spreadNow > NormalSpreadPoints) // [V9.1-01]
+   double spreadRange = (double)(P_MaxSpreadPoints - NormalSpreadPoints); // [V9.1-01]
+   if(spreadRange > 0.0 && spreadNow > NormalSpreadPoints) // [V9.1-01]
    {
       double spreadUsed = MathMin((double)spreadNow, (double)P_MaxSpreadPoints); // [V9.1-01]
-      double spreadFrac = (spreadUsed - NormalSpreadPoints) / (P_MaxSpreadPoints - NormalSpreadPoints); // [V9.1-01]
+      double spreadFrac = (spreadUsed - NormalSpreadPoints) / spreadRange; // [V9.1-01]
       if(spreadFrac < 0.0) spreadFrac = 0.0; // [V9.1-01]
       if(spreadFrac > 1.0) spreadFrac = 1.0; // [V9.1-01]
       double penaltyPct = spreadFrac * 20.0; // [V9.1-01]
@@ -2633,11 +2636,12 @@ bool ExitDecisionEngine()
       double o2 = iOpen(Symbol(), PERIOD_M5, 2);  // [V9.1-02]
       bool twoBearishOppBars = (c1 > 0.0 && o1 > 0.0 && c2 > 0.0 && o2 > 0.0 && c1 < o1 && c2 < o2); // [V9.1-02]
       bool twoBullishOppBars = (c1 > 0.0 && o1 > 0.0 && c2 > 0.0 && o2 > 0.0 && c1 > o1 && c2 > o2); // [V9.1-02]
-      bool momentumAgainst = (g_positionDirection == 1 && rsiNow < EntryRSI_SellMin && twoBearishOppBars) || // [V9.1-02]
-                             (g_positionDirection == -1 && rsiNow > SoftSL_RSIThresh && twoBullishOppBars);   // [V9.1-02]
+      double softSLThresh = (g_positionDirection == 1) ? EntryRSI_SellMin : EntryRSI_BuyMax; // [V9.1-02]
+      bool momentumAgainst = (g_positionDirection == 1 && rsiNow < softSLThresh && twoBearishOppBars) || // [V9.1-02]
+                             (g_positionDirection == -1 && rsiNow > softSLThresh && twoBullishOppBars);   // [V9.1-02]
       if(momentumAgainst) {
          g_exitRequested = true; g_exitReason = "soft_sl_momentum";
-         LogEvent("EXIT_SOFT_SL_MOMENTUM", StringFormat("profit=%.2f rsi=%.1f dir=%d opp2bar=1", profit, rsiNow, g_positionDirection)); // [V9.1-02]
+         LogEvent("EXIT_SOFT_SL_MOMENTUM", StringFormat("profit=%.2f rsi=%.1f thresh=%.1f dir=%d", profit, rsiNow, softSLThresh, g_positionDirection)); // [V9.1-02]
          if(CloseAllPositions(g_exitReason)) { g_state = STATE_RESET; g_exitRequested = false; return true; }
       }
    }
@@ -2690,8 +2694,9 @@ bool ExitDecisionEngine()
       double allowedRetrace = GetAllowedRetraceDollar(g_peakProfitMoney);
       if(g_peakProfitMoney >= HighPeakThreshold) // [V9.1-03]
          allowedRetrace = MathMin(allowedRetrace, g_peakProfitMoney * (HighPeakRetracePct / 100.0)); // [V9.1-03]
-      if(g_worstProfitMoney < -5.0) // [V9.1-03]
-         allowedRetrace = MathMin(allowedRetrace, g_peakProfitMoney * ((TrailRetracePct_Small * 0.7) / 100.0)); // [V9.1-03]
+      if(g_worstProfitMoney < -LosingLegWorstThreshold_USD) // [V9.1-03]
+         // [V9.1-03] Intentional: force tighter retrace baseline using small-tier pct after any deep losing leg.
+         allowedRetrace = MathMin(allowedRetrace, g_peakProfitMoney * ((TrailRetracePct_Small * LosingLegTrailTightenFactor) / 100.0)); // [V9.1-03]
       if((g_peakProfitMoney - profit) >= allowedRetrace)
       { g_exitRequested = true; g_exitReason = "tiered_profit_trail";
         LogEvent("EXIT_TIERED_TRAIL", StringFormat("profit=%.2f peak=%.2f allowedRetrace=%.2f", profit, g_peakProfitMoney, allowedRetrace));
