@@ -48,9 +48,17 @@
 //         trades (always a winner in the V7 log) run a bit further before being locked in.
 // [V8-08] (Priority 3) Trade CSV log now also records pyramid_level and account balance/equity per
 //         row, enabling ROI/Sharpe and pyramid-level profitability analysis in future CSV reviews.
+//
+// V9.1 CHANGELOG (live log patch - 13 Aug 2026):
+// [V9.1-01] MaxSpreadPoints default 35->50, add NormalSpreadPoints=38 as spread baseline and apply
+//           up to 20% lot penalty when spread rises above normal but remains tradable.
+// [V9.1-02] soft_sl_momentum: avoid false BUY cut in oversold zone by requiring RSI<EntryRSI_SellMin
+//           plus 2 opposite momentum candles; SoftSL_USD default 9.0->10.0.
+// [V9.1-03] Tighten cycle giveback: cap retrace at HighPeakRetracePct when peak>=HighPeakThreshold,
+//           and tighten further after a losing leg (worst<-5.0) to reduce net giveback.
 //+------------------------------------------------------------------+
 #property strict
-#property version   "9.0"
+#property version   "9.1" // [V9.1-04]
 #property description "Breakout OCO V9 - Data-driven hardening from V6-V8 CSV analysis"
 
 //============================== INPUTS ==============================
@@ -157,6 +165,8 @@ input double   TrailDrop_LargePeak       = 8.00;
 input double   TrailRetracePct_Small     = 25.0;   // [V6.46 FIX] 55.0 -> 25.0
 input double   TrailRetracePct_Med       = 25.0;   // [V6.46 FIX] 40.0 -> 25.0
 input double   TrailRetracePct_Large     = 20.0;   // [V6.46 FIX] 25.0 -> 20.0
+input double   HighPeakThreshold         = 10.0;   // [V9.1-03]
+input double   HighPeakRetracePct        = 12.0;   // [V9.1-03]
 input bool     UseTrendAdaptiveTrail     = true;
 input double   TrendIntactTrailMult      = 1.30;
 input double   TrendWeakTrailMult        = 0.60;
@@ -178,7 +188,7 @@ input double   TrendFlipExit_MinPeakToIgnore  = 8.0;
 
 // --- [V6.46 NEW] Smart Early Exit (SoftSL) ---
 input bool     UseSoftSL_Momentum       = true;
-input double   SoftSL_USD               = 9.0;    // [V9-02] tighten soft loss cut: soft_sl_momentum was top loss driver in V8
+input double   SoftSL_USD               = 10.0;   // [V9.1-02]
 input int      SoftSL_RSIThresh         = 58;     // [V9-02] stronger momentum confirmation for faster adverse exits
 
 // --- [V6.46 NEW] Time-based Stop Loss ---
@@ -235,7 +245,8 @@ input int      MinStopBufferPoints      = 15;     // [V6.46 FIX] Naikkan dari 15
 input int      UnprotectedForceCloseSec = 20;    
 
 // --- Filters ---
-input int      MaxSpreadPoints           = 35;   // [V9-04] spread<=35 showed better edge in V8 log
+input int      MaxSpreadPoints           = 50;     // [V9.1-01]
+input int      NormalSpreadPoints        = 38;     // [V9.1-01]
 input int      SlippagePoints            = 30;
 input bool     UseATRFilter              = true;
 input int      ATR_Period                = 14;
@@ -704,6 +715,18 @@ double CalculateTradeLot(string context)
          rawLot = rawLot * 0.5;
          g_lastLotReason = g_lastLotReason + "+TIME_REDUCE(50%)";
       }
+   }
+
+   int spreadNow = SpreadPoints(); // [V9.1-01]
+   if(P_MaxSpreadPoints > NormalSpreadPoints && spreadNow > NormalSpreadPoints) // [V9.1-01]
+   {
+      double spreadUsed = MathMin((double)spreadNow, (double)P_MaxSpreadPoints); // [V9.1-01]
+      double spreadFrac = (spreadUsed - NormalSpreadPoints) / (P_MaxSpreadPoints - NormalSpreadPoints); // [V9.1-01]
+      if(spreadFrac < 0.0) spreadFrac = 0.0; // [V9.1-01]
+      if(spreadFrac > 1.0) spreadFrac = 1.0; // [V9.1-01]
+      double penaltyPct = spreadFrac * 20.0; // [V9.1-01]
+      rawLot = rawLot * (1.0 - penaltyPct / 100.0); // [V9.1-01]
+      g_lastLotReason = g_lastLotReason + StringFormat("+SPREAD_PEN(%.1f%%@%d)", penaltyPct, spreadNow); // [V9.1-01]
    }
 
    double volMult = GetATRVolatilityLotMultiplier(g_lastLotReason);
@@ -2604,11 +2627,17 @@ bool ExitDecisionEngine()
    // [V6.46 PATCH] Smart Early Exit (Soft SL + Momentum)
    if(UseSoftSL_Momentum && profit <= -SoftSL_USD) {
       double rsiNow = iRSI(Symbol(), PERIOD_M5, RSI_Period, PRICE_CLOSE, 0);
-      bool momentumAgainst = (g_positionDirection == 1 && rsiNow < SoftSL_RSIThresh) ||
-                             (g_positionDirection == -1 && rsiNow > SoftSL_RSIThresh);
+      double c1 = iClose(Symbol(), PERIOD_M5, 1); // [V9.1-02]
+      double o1 = iOpen(Symbol(), PERIOD_M5, 1);  // [V9.1-02]
+      double c2 = iClose(Symbol(), PERIOD_M5, 2); // [V9.1-02]
+      double o2 = iOpen(Symbol(), PERIOD_M5, 2);  // [V9.1-02]
+      bool twoBearishOppBars = (c1 > 0.0 && o1 > 0.0 && c2 > 0.0 && o2 > 0.0 && c1 < o1 && c2 < o2); // [V9.1-02]
+      bool twoBullishOppBars = (c1 > 0.0 && o1 > 0.0 && c2 > 0.0 && o2 > 0.0 && c1 > o1 && c2 > o2); // [V9.1-02]
+      bool momentumAgainst = (g_positionDirection == 1 && rsiNow < EntryRSI_SellMin && twoBearishOppBars) || // [V9.1-02]
+                             (g_positionDirection == -1 && rsiNow > SoftSL_RSIThresh && twoBullishOppBars);   // [V9.1-02]
       if(momentumAgainst) {
          g_exitRequested = true; g_exitReason = "soft_sl_momentum";
-         LogEvent("EXIT_SOFT_SL_MOMENTUM", StringFormat("profit=%.2f rsi=%.1f dir=%d", profit, rsiNow, g_positionDirection));
+         LogEvent("EXIT_SOFT_SL_MOMENTUM", StringFormat("profit=%.2f rsi=%.1f dir=%d opp2bar=1", profit, rsiNow, g_positionDirection)); // [V9.1-02]
          if(CloseAllPositions(g_exitReason)) { g_state = STATE_RESET; g_exitRequested = false; return true; }
       }
    }
@@ -2659,6 +2688,10 @@ bool ExitDecisionEngine()
    if(g_peakProfitMoney >= TrailStart_Dollar)
    {
       double allowedRetrace = GetAllowedRetraceDollar(g_peakProfitMoney);
+      if(g_peakProfitMoney >= HighPeakThreshold) // [V9.1-03]
+         allowedRetrace = MathMin(allowedRetrace, g_peakProfitMoney * (HighPeakRetracePct / 100.0)); // [V9.1-03]
+      if(g_worstProfitMoney < -5.0) // [V9.1-03]
+         allowedRetrace = MathMin(allowedRetrace, g_peakProfitMoney * ((TrailRetracePct_Small * 0.7) / 100.0)); // [V9.1-03]
       if((g_peakProfitMoney - profit) >= allowedRetrace)
       { g_exitRequested = true; g_exitReason = "tiered_profit_trail";
         LogEvent("EXIT_TIERED_TRAIL", StringFormat("profit=%.2f peak=%.2f allowedRetrace=%.2f", profit, g_peakProfitMoney, allowedRetrace));
@@ -2969,7 +3002,7 @@ void ApplyPreset()
       P_AdaptiveADXStepPerLoss=3.0; P_MaxAdaptiveADXAdd=6.0;
       P_RestartDelaySeconds=300; P_ConsecutiveLossPauseSec=900; P_MaxConsecutiveCycleLosses=2;
       P_TrendMinSepATRMult=0.20; P_FastConfirm_MinSepATRMult=0.20;
-      P_MinATR_Dollar=2.0; P_MaxSpreadPoints=35; P_PendingExpireMinutes=15;
+      P_MinATR_Dollar=2.0; P_MaxSpreadPoints=50; P_PendingExpireMinutes=15; // [V9.1-01]
       P_BE_Start_Dollar=8.0; P_TrailDrop_SmallPeak=2.0; P_TrailDrop_MedPeak=5.0;
       P_TrendFlipExit_MinPeakToIgnore=10.0; P_HardStopFullDayThreshold=5;
       P_UseAdaptiveADXOnLosses=true; P_UseFastTrendConfirm=true;
@@ -3022,7 +3055,7 @@ void ApplyPreset()
       P_TrendMinSepATRMult        = 0.15;
       P_FastConfirm_MinSepATRMult = 0.10;
       P_MinATR_Dollar             = 2.5;
-      P_MaxSpreadPoints           = 35;
+      P_MaxSpreadPoints           = 50; // [V9.1-01]
       P_PendingExpireMinutes      = 30;
       
       P_BE_Start_Dollar           = 8.0;  
