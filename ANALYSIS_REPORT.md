@@ -12,8 +12,11 @@
 | V7.1 (estimasi) | 12 | -76.30 | 50.00% | 0.232 | 95.14 | 3.83 | -16.55 | 3 |
 | V7.1a | 77 | +10.02 | 64.94% | 1.028 | 83.96 | 7.23 | -13.02 | 3 |
 | V8 | 128 | -59.75 | 60.94% | 0.896 | 89.07 | 6.59 | -11.48 | 5 |
+| V9 (live log) | 116 | -64.06 | 66.38% | 0.878 | 119.22** | 5.99 | -13.47 | 3 |
 
 \*Max Drawdown dihitung dari kurva cumulative realized PnL dalam urutan log close.
+
+\*\*Max Drawdown V9 dihitung dari kurva cumulative realized PnL untuk trade `type=main` saja (hedge legs V9 justru net +36.30 dan tidak dihitung dalam angka ini).
 
 ### Trend penting (V6 → V8)
 - **V7.1a** sempat profitable (PF > 1), namun **V8 kembali negatif**.
@@ -102,3 +105,65 @@ Basis: copy dari `EA_Breakout_OCO_V8.mq4`, lalu tuning minimal namun terarah dat
 ## 4) Catatan OCO Core Strategy
 - Core breakout + OCO tetap dipertahankan.
 - Logik OCO cancel lawan saat trigger tetap digunakan dari V8 (tidak dirombak total), perubahan difokuskan ke quality filter, risk, dan loss-exit sesuai pola CSV.
+
+## 5) Kenapa V9 Masih Loss (analisis `EA_Breakout_OCO_V9_log_XAUUSD.csv`)
+
+Sumber: 116 baris `close` live (13–14 Aug 2026). Net PnL **-64.06**, win rate **66.38%**, tapi **Profit Factor 0.878** (masih <1).
+
+### 5.1 Breakdown per grup posisi
+- `type=main`: 78 close, PnL **-100.36**
+- `type=hedge`: 38 close, PnL **+36.30**
+
+→ Modul hedge sudah menguntungkan; **sumber kerugian murni ada di posisi main**, bukan hedge.
+
+### 5.2 Breakdown exit_reason (gross loss)
+| exit_reason | count | total PnL |
+|---|---:|---:|
+| `time_loss_exit_confirmed` | 22 | **-330.69** |
+| `time_loss_exit_hardcap` | 6 | **-105.11** |
+| `soft_sl_momentum` | 2 | -47.25 |
+| `hedge_max_loss` | 3 | -30.95 |
+
+Kombinasi `time_loss_exit_confirmed` + `time_loss_exit_hardcap` = **-435.80 dari total gross loss -525.20 (≈83%)** — ini akar masalah utama V9.
+
+### 5.3 Root cause
+1. **Tidak ada hard-stop broker-side sejak awal posisi.** `UseEarlyLossCut` default `false` di V9, sehingga selama `TimeLossExitMinutes` (8 menit) belum lewat, posisi hanya dilindungi oleh SL awal yang lebar (berbasis `RiskPct`). Saat market bergerak cepat, floating loss bisa sudah jauh melampaui target proteksi ($12–$15.6) sebelum modul exit software sempat mengevaluasi.
+2. **Konfirmasi momentum (RSI + pola bar) menunda eksekusi cut-loss.** `time_loss_exit_confirmed` mensyaratkan RSI melawan arah posisi baru memicu cut; `soft_sl_momentum` bahkan mensyaratkan RSI ekstrem **dan** 2 candle M5 berlawanan. Selama syarat itu belum terpenuhi, posisi tetap terbuka dan rugi terus membesar.
+3. **Korelasi dengan volatilitas (ATR).** Trade dengan kerugian terbesar (-20 s/d -30) konsisten terjadi saat ATR 5–8 — yaitu **di bawah** ambang `ATR_Volatility_Level1=8.0`, sehingga modul pengurang lot berbasis ATR (`UseATRVolatilityLotReduction`) belum aktif pada rentang volatilitas yang justru paling berbahaya di log ini.
+4. **SELL masih sisi lebih lemah**: trade main BUY net **-1.38** (59 close) vs SELL net **-59.23** (56 close), walau `SellLotMult` sudah diturunkan ke 0.75 di V9 — pengurangan itu belum cukup.
+
+## 6) Perubahan `EA_Breakout_OCO_V10.mq4` (patch berdasarkan analisis V9)
+
+Basis: copy dari `EA_Breakout_OCO_V9.mq4`.
+
+### 6.1 Aktifkan proteksi awal broker-side (Priority 1)
+- `UseEarlyLossCut`: **false → true**
+- `EarlyLossCut_MaxLoss`: **4.0 → 8.0**
+- `EarlyLossCut_MaxLoss_WhileHedged`: **4.0 → 6.0**
+
+**Alasan:** `ApplyEarlyLossHardSL()` memodifikasi SL order riil di broker sejak tick pertama (tidak menunggu `TimeLossExitMinutes`/konfirmasi RSI), sehingga menjadi jaring pengaman nyata untuk kasus overshoot yang mendominasi kerugian V9.
+
+### 6.2 Perketat ambang lot-reduction ATR (Priority 1)
+- `ATR_Volatility_Level1`: **8.0 → 6.0**
+- `ATR_Volatility_Level2`: **10.0 → 8.0**
+
+**Alasan:** rentang ATR 5–8 pada log V9 justru menghasilkan kerugian terbesar namun belum memicu pengurangan lot; ambang diturunkan agar rentang tersebut ikut tercakup.
+
+### 6.3 Perketat hard-cap time-loss-exit (Priority 1)
+- `TimeLossExit_HardMultiplier`: **1.3 → 1.15**
+
+**Alasan:** mengurangi ruang overshoot software-side safety-net dari maksimum ±30% menjadi ±15% di atas `TimeLossExitUSD`.
+
+### 6.4 Kurangi lagi risiko SELL (Priority 2)
+- `SellLotMult`: **0.75 → 0.65**
+
+**Alasan:** SELL main tetap sisi terlemah pada log V9 (-59.23 vs -1.38 BUY).
+
+### 6.5 Metadata/version update
+- File baru: `EA_Breakout_OCO_V10.mq4`
+- `#property version`: `10.0`
+- `EA_Name`: `EA_Breakout_OCO_V10`
+- `CSV_FileName`: `EA_Breakout_OCO_V10_Behavior.csv`
+- `EA_INIT` log label: `V10`
+
+**Catatan:** tidak ada perubahan pada core breakout + OCO. Perubahan V10 seluruhnya di lapisan risk-management (early stop, ATR lot-scaling, time-loss hard-cap, SELL sizing) sesuai temuan langsung dari `EA_Breakout_OCO_V9_log_XAUUSD.csv`.
