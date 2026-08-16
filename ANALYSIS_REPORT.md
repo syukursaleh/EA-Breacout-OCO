@@ -12,11 +12,11 @@
 | V7.1 (estimasi) | 12 | -76.30 | 50.00% | 0.232 | 95.14 | 3.83 | -16.55 | 3 |
 | V7.1a | 77 | +10.02 | 64.94% | 1.028 | 83.96 | 7.23 | -13.02 | 3 |
 | V8 | 128 | -59.75 | 60.94% | 0.896 | 89.07 | 6.59 | -11.48 | 5 |
-| V9 (live log) | 116 | -64.06 | 66.38% | 0.878 | 119.22* | 5.99 | -13.47 | 3 |
-
-\*Max Drawdown V9 dihitung dari kurva cumulative realized PnL untuk trade `type=main` saja (hedge legs V9 justru net +36.30 dan tidak dihitung dalam angka ini).
+| V9 (live log) | 116 | -64.06 | 66.38% | 0.878 | 119.22** | 5.99 | -13.47 | 3 |
 
 \*Max Drawdown dihitung dari kurva cumulative realized PnL dalam urutan log close.
+
+\*\*Max Drawdown V9 dihitung dari kurva cumulative realized PnL untuk trade `type=main` saja (hedge legs V9 justru net +36.30 dan tidak dihitung dalam angka ini).
 
 ### Trend penting (V6 → V8)
 - **V7.1a** sempat profitable (PF > 1), namun **V8 kembali negatif**.
