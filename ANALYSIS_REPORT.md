@@ -196,7 +196,7 @@ Basis: copy dari `EA_Breakout_OCO_V10.mq4`. Semua perubahan V11 murni penambahan
 
 ### 8.1 [V11-01] "Minus Block" — force-close saat profit mau kembali minus (Priority 1)
 - Input baru: `UseMinusBlock=true`, `MinusBlock_ArmPeakMoney=3.00`, `MinusBlock_FloorMoney=2.00`.
-- Logika baru di `ExitDecisionEngine()`: begitu peak floating profit cycle berjalan sudah mencapai `MinusBlock_ArmPeakMoney`, posisi **wajib ditutup paksa** (`minus_block_force_close`) begitu profit turun ke `MinusBlock_FloorMoney` ($2) — sebelum sempat balik ke minus.
+- Logika baru di `ExitDecisionEngine()`: begitu peak floating profit cycle berjalan sudah mencapai `MinusBlock_ArmPeakMoney`, posisi **wajib ditutup paksa** (`minus_block_force_close`) begitu profit turun ke `MinusBlock_FloorMoney` ($2) **selagi masih positif** — sebelum sempat balik ke minus. Syarat `profit > 0` memastikan guard ini hanya berlaku untuk skenario retrace-dari-profit dan tidak tumpang tindih dengan guard rugi-dalam yang sudah ada (`early_loss_cut`/`v1d_profit_to_loss`/`emergency_loss`).
 - Ditempatkan **setelah** blok `tiered_profit_trail` yang sudah ada, sehingga untuk cycle yang peak-nya ≥ `TrailStart_Dollar` ($8), trailing normal tetap mendapat kesempatan pertama menutup posisi seperti biasa (**tidak berubah sama sekali**). Minus Block hanya mengisi celah untuk cycle dengan peak kecil (antara $3–$8) yang selama ini lolos dari semua guard dan berakhir kena SL -$8 seperti pola di §7.1.
 
 **Alasan:** langsung menyasar pola `RECONCILED_BROKER_CLOSE` (peak profit kecil → berbalik ke -$8) yang menjadi kontributor gross loss terbesar di log V10.

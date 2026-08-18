@@ -94,12 +94,12 @@
 // market and resuming sooner.
 // [V11-01] (Priority 1) NEW "Minus Block": once a cycle's floating profit has reached at least
 //          MinusBlock_ArmPeakMoney (default $3.0), force-close the whole cycle the moment profit
-//          retraces down to MinusBlock_FloorMoney (default $2.0) — well before it can slide back
-//          into loss. This closes the gap left by the existing tiered trail (which only arms once
-//          peak >= TrailStart_Dollar = $8) and the V1D profit-lock guard (which only cuts after
-//          going negative, at -$4). Normal trailing (tiered_profit_trail, ratchet, BE, etc.) is
-//          left completely untouched and keeps working exactly as before for cycles that peak
-//          above the trail-start threshold.
+//          retraces down to MinusBlock_FloorMoney (default $2.0) while still positive — well
+//          before it can slide back into loss. This closes the gap left by the existing tiered
+//          trail (which only arms once peak >= TrailStart_Dollar = $8) and the V1D profit-lock
+//          guard (which only cuts after going negative, at -$4). Normal trailing
+//          (tiered_profit_trail, ratchet, BE, etc.) is left completely untouched and keeps
+//          working exactly as before for cycles that peak above the trail-start threshold.
 // [V11-02] (Priority 1) Replaced the "hard stop after N consecutive losses" philosophy with a
 //          "rescan direction" gate: UseHardStopConsecutiveLosses and UseHardStopFullDay now
 //          default to false (kept available for anyone who still wants the old long pause/full-day
@@ -2769,8 +2769,11 @@ bool ExitDecisionEngine()
    // behavior for cycles that peak >= TrailStart_Dollar). This is a hard floor that catches
    // every other case where a cycle floated into profit (>= MinusBlock_ArmPeakMoney) but never
    // reached the trailing-start threshold, so it must not be allowed to slide back into a loss -
-   // it gets force-closed the instant profit retraces down to MinusBlock_FloorMoney.
-   if(UseMinusBlock && g_peakProfitMoney >= MinusBlock_ArmPeakMoney && profit <= MinusBlock_FloorMoney)
+   // it gets force-closed the instant profit retraces down to MinusBlock_FloorMoney while still
+   // positive. Requiring profit > 0 keeps this scoped to the retrace-from-profit scenario and
+   // avoids overlapping with the deep-loss guards above (early_loss_cut/v1d_profit_to_loss/
+   // emergency_loss) that already handle profit going negative.
+   if(UseMinusBlock && g_peakProfitMoney >= MinusBlock_ArmPeakMoney && profit > 0.0 && profit <= MinusBlock_FloorMoney)
    { g_exitRequested = true; g_exitReason = "minus_block_force_close";
      LogEvent("EXIT_MINUS_BLOCK", StringFormat("profit=%.2f peak=%.2f floor=%.2f", profit, g_peakProfitMoney, MinusBlock_FloorMoney));
      if(CloseAllPositions(g_exitReason)) { g_state = STATE_RESET; g_exitRequested = false; return true; } }
