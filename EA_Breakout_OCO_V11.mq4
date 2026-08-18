@@ -1,6 +1,6 @@
 //+------------------------------------------------------------------+
-//| EA_Breakout_OCO_V10.mq4                                       |
-//| Breakout OCO Cycle Engine V10 (Real-log Hardening)              |
+//| EA_Breakout_OCO_V11.mq4                                       |
+//| Breakout OCO Cycle Engine V11 (Minus Block + Rescan-After-Loss)  |
 //+------------------------------------------------------------------+
 //
 // V7 CHANGELOG (from V6.47):
@@ -82,15 +82,44 @@
 // [V10-05] (Priority 3) EarlyLossCut_MaxLoss 4.0->8.0 and EarlyLossCut_MaxLoss_WhileHedged
 //          4.0->6.0 so the new early cap is a genuine early-stage safety net (roughly aligned
 //          with TimeLossExitUSD) rather than an overly tight stop that would clip normal noise.
+//
+// V11 CHANGELOG (from analysis of EA_Breakout_OCO_V10_log_XAUUSD.csv / _Behavior.csv, 62 closed
+// "main" trades, net PnL +17.13, PF 1.07, but max consecutive losses = 6 and the single worst
+// exit-reason bucket, broker_side_close(sl_or_tp_hit) (29 trades, -148.79), was dominated by
+// positions that had already floated in profit (peak_profit 3.84 / 7.56 / 0.24 per
+// RECONCILED_BROKER_CLOSE rows) and then reversed all the way down to the -$8 hard SL instead of
+// being cut while still small/near break-even. The Behavior CSV also shows the EA hit
+// CONSEC_LOSS_HARD_STOP at 4/5/6 losses on 17 Aug and then CONSEC_LOSS_FULL_DAY_STOP at 6 losses,
+// halting all new cycles until the next calendar day (00:00 rollover) instead of re-validating the
+// market and resuming sooner.
+// [V11-01] (Priority 1) NEW "Minus Block": once a cycle's floating profit has reached at least
+//          MinusBlock_ArmPeakMoney (default $3.0), force-close the whole cycle the moment profit
+//          retraces down to MinusBlock_FloorMoney (default $2.0) — well before it can slide back
+//          into loss. This closes the gap left by the existing tiered trail (which only arms once
+//          peak >= TrailStart_Dollar = $8) and the V1D profit-lock guard (which only cuts after
+//          going negative, at -$4). Normal trailing (tiered_profit_trail, ratchet, BE, etc.) is
+//          left completely untouched and keeps working exactly as before for cycles that peak
+//          above the trail-start threshold.
+// [V11-02] (Priority 1) Replaced the "hard stop after N consecutive losses" philosophy with a
+//          "rescan direction" gate: UseHardStopConsecutiveLosses and UseHardStopFullDay now
+//          default to false (kept available for anyone who still wants the old long pause/full-day
+//          block). Instead, UseRescanAfterLosses (default true) arms after
+//          RescanAfterLossesThreshold (default 2) consecutive losing cycles: before the next OCO
+//          cycle is allowed to open, the EA must re-confirm the trend direction with
+//          GetFastConfirmDirection() (the same fast-timeframe confirmation already used elsewhere)
+//          agreeing with the main trend — if it does not yet agree, the cycle is simply blocked
+//          this tick (FILTER_BLOCK_RESCAN_DIRECTION) and retried on the next signal, with no long
+//          time-based pause or full-day block. The short CONSECUTIVE_LOSS_PAUSE cooldown
+//          (MaxConsecutiveCycleLosses) is unchanged and still applies independently.
 //+------------------------------------------------------------------+
 #property strict
-#property version   "10.0"
-#property description "Breakout OCO V10 - Data-driven hardening from V9 live-trade CSV analysis"
+#property version   "11.0"
+#property description "Breakout OCO V11 - Minus Block force-close + rescan-after-2-losses (from V10 live-trade CSV analysis)"
 
 //============================== INPUTS ==============================
 // --- General ---
-input int      MagicNumber              = 9001060;
-input string   EA_Name                  = "EA_Breakout_OCO_V10";
+input int      MagicNumber              = 9001110;
+input string   EA_Name                  = "EA_Breakout_OCO_V11";
 input bool     PrintDebug               = true;
 
 // --- [V6-01] Preset Mode ------------------------------------------
@@ -251,6 +280,11 @@ input double   V1D_MinProfitPeakForTightLoss = 999.0;
 input double   V1D_TightLossAfterSmallPeak   = 8.00;
 input bool     UseV1DStrictOCOCleanup      = true;
 
+// --- [V11-01] Minus Block: force-close a cycle before it can retrace from profit back into loss ---
+input bool     UseMinusBlock              = true;
+input double   MinusBlock_ArmPeakMoney    = 3.00;  // arm once this cycle's peak floating profit reaches this
+input double   MinusBlock_FloorMoney      = 2.00;  // force-close as soon as profit retraces down to this floor
+
 // --- Pyramid ---
 input bool     UsePyramid                = false;  
 input int      PyramidMaxPositions       = 2;
@@ -291,7 +325,7 @@ input bool     AutoRestartCycle          = true;
 input int      RestartDelaySeconds       = 300;    
 input int      PendingExpireMinutes      = 20;
 input bool     EnableCSVLog              = true;
-input string   CSV_FileName              = "EA_Breakout_OCO_V10_Behavior.csv";
+input string   CSV_FileName              = "EA_Breakout_OCO_V11_Behavior.csv";
 input bool     EnforceSingleInstance     = true;
 
 // --- Pending trail ---
@@ -306,11 +340,13 @@ input int      LossCooldownAfterLossSec  = 300;    // [V9-05] cooldown after eac
 input bool     UseConsecLossLotReduction = true;
 input double   ConsecLossLotReduce2      = 0.50;
 input double   ConsecLossLotReduce3      = 0.50;
-input bool     UseHardStopConsecutiveLosses = true;
+input bool     UseHardStopConsecutiveLosses = false; // [V11-02] replaced by rescan-direction gate (see UseRescanAfterLosses)
 input int      HardStopConsecutiveLosses    = 4;
 input int      HardStopPauseSec             = 3600; 
-input bool     UseHardStopFullDay        = true;
+input bool     UseHardStopFullDay        = false;    // [V11-02] replaced by rescan-direction gate (see UseRescanAfterLosses)
 input int      HardStopFullDayThreshold  = 6;      
+input bool     UseRescanAfterLosses      = true;   // [V11-02] re-confirm trend direction before next OP after N losses
+input int      RescanAfterLossesThreshold = 2;      // [V11-02] arm the rescan gate after this many consecutive losses
 input bool     UseAdaptiveADXOnLosses    = true;
 input double   AdaptiveADXStepPerLoss    = 1.0;    
 input double   MaxAdaptiveADXAdd         = 4.0;    
@@ -540,7 +576,7 @@ int        g_dailyLosses = 0;
 
 // --- Dashboard ---
 datetime   g_dashLastUpdate = 0;
-string     g_dashPrefix = "V10DASH_";
+string     g_dashPrefix = "V11DASH_";
 int        g_dashLineCount = 0;
 
 //============================== HELPERS ==============================
@@ -2729,6 +2765,16 @@ bool ExitDecisionEngine()
         if(CloseAllPositions(g_exitReason)) { g_state = STATE_RESET; g_exitRequested = false; return true; } }
    }
 
+   // [V11-01] Minus Block: normal trailing above already had first chance to close (unchanged
+   // behavior for cycles that peak >= TrailStart_Dollar). This is a hard floor that catches
+   // every other case where a cycle floated into profit (>= MinusBlock_ArmPeakMoney) but never
+   // reached the trailing-start threshold, so it must not be allowed to slide back into a loss -
+   // it gets force-closed the instant profit retraces down to MinusBlock_FloorMoney.
+   if(UseMinusBlock && g_peakProfitMoney >= MinusBlock_ArmPeakMoney && profit <= MinusBlock_FloorMoney)
+   { g_exitRequested = true; g_exitReason = "minus_block_force_close";
+     LogEvent("EXIT_MINUS_BLOCK", StringFormat("profit=%.2f peak=%.2f floor=%.2f", profit, g_peakProfitMoney, MinusBlock_FloorMoney));
+     if(CloseAllPositions(g_exitReason)) { g_state = STATE_RESET; g_exitRequested = false; return true; } }
+
    if(UseV1DProfitLockGuard && g_peakProfitMoney >= V1D_MicroProfitStartMoney)
    { double microRetrace = g_peakProfitMoney - profit;
      double minMicroDrop = MathMax(0.50, GetAllowedRetraceDollar(g_peakProfitMoney));
@@ -3258,7 +3304,7 @@ int OnInit()
 
    if(!AcquireSingleInstanceLock()) return(INIT_FAILED);
 
-   LogEvent("EA_INIT", StringFormat("V10|Preset=%s|MaxLoss=$%.1f SL=$%.1f RiskPct=%.2f|HedgeMaxNeg=$%.1f LotRatio=%.2f ConfirmBars=%d Cooldown=%ds|DailyDD=%.1f%% WeeklyLim=$%.0f|AutoLotMode=%s|Session=%s NewsFilter=%s (%d times)",
+   LogEvent("EA_INIT", StringFormat("V11|Preset=%s|MaxLoss=$%.1f SL=$%.1f RiskPct=%.2f|HedgeMaxNeg=$%.1f LotRatio=%.2f ConfirmBars=%d Cooldown=%ds|DailyDD=%.1f%% WeeklyLim=$%.0f|AutoLotMode=%s|Session=%s NewsFilter=%s (%d times)",
       PresetName(), P_MaxLossMoney, P_InitialSL_Dollar, P_RiskPercent,
       P_HedgeMaxNegDollar, P_HedgeLotRatio, HedgeMinConfirmBars, HedgeCooldownSec,
       P_MaxDailyDrawdownPct, MaxWeeklyLossMoney,
@@ -3477,6 +3523,25 @@ void OnTick()
    { g_state = STATE_BLOCKED_BY_FILTER;
      g_lastBlockReason = (TrendFilterMethod == 0) ? "TREND_NEUTRAL_EMA" : "TREND_WEAK_ADX";
      LogEvent("FILTER_BLOCK_TREND", g_lastBlockReason);     g_lastResetTime = TimeCurrent(); Dashboard_Update(); return; }
+
+   // [V11-02] Rescan-direction gate: after RescanAfterLossesThreshold consecutive losing cycles,
+   // require the fast-timeframe confirmation to agree with the main trend before the next OP is
+   // allowed. This replaces long hard-stop pauses/full-day blocks with a per-tick re-validation -
+   // as soon as the direction is confirmed again, trading resumes normally on the very next signal.
+   if(UseRescanAfterLosses && RescanAfterLossesThreshold > 0 &&
+      g_consecutiveLosses >= RescanAfterLossesThreshold && trend != 0)
+   {
+      int rescanFastTrend = GetFastConfirmDirection();
+      if(rescanFastTrend == 0 || rescanFastTrend != trend)
+      {
+         g_state = STATE_BLOCKED_BY_FILTER;
+         g_lastBlockReason = StringFormat("RESCAN_DIRECTION_UNCONFIRMED (losses=%d main=%d fast=%d)",
+                              g_consecutiveLosses, trend, rescanFastTrend);
+         LogEvent("FILTER_BLOCK_RESCAN_DIRECTION", g_lastBlockReason);
+         g_lastResetTime = TimeCurrent(); Dashboard_Update(); return;
+      }
+      LogEvent("RESCAN_DIRECTION_CONFIRMED", StringFormat("losses=%d trend=%d fast=%d", g_consecutiveLosses, trend, rescanFastTrend));
+   }
 
    double rsiAtDisagree = iRSI(Symbol(), PERIOD_M5, RSI_Period, PRICE_CLOSE, 1);
    if(trend != 0 && P_UseFastTrendConfirm)

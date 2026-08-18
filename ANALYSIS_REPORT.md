@@ -13,6 +13,7 @@
 | V7.1a | 77 | +10.02 | 64.94% | 1.028 | 83.96 | 7.23 | -13.02 | 3 |
 | V8 | 128 | -59.75 | 60.94% | 0.896 | 89.07 | 6.59 | -11.48 | 5 |
 | V9 (live log) | 116 | -64.06 | 66.38% | 0.878 | 119.22** | 5.99 | -13.47 | 3 |
+| V10 (live log, main only) | 62 | +17.13 | 48.39% | 1.067 | 81.56 | 9.10 | -8.00 | 6 |
 
 \*Max Drawdown dihitung dari kurva cumulative realized PnL dalam urutan log close.
 
@@ -167,3 +168,57 @@ Basis: copy dari `EA_Breakout_OCO_V9.mq4`.
 - `EA_INIT` log label: `V10`
 
 **Catatan:** tidak ada perubahan pada core breakout + OCO. Perubahan V10 seluruhnya di lapisan risk-management (early stop, ATR lot-scaling, time-loss hard-cap, SELL sizing) sesuai temuan langsung dari `EA_Breakout_OCO_V9_log_XAUUSD.csv`.
+
+## 7) Analisis `EA_Breakout_OCO_V10_log_XAUUSD.csv` / `_Behavior.csv` (file terbaru)
+
+Sumber: 62 baris `close` live untuk `type=main` (17–18 Aug 2026), plus `EA_Breakout_OCO_V10_Behavior.csv` (1997 event).
+
+### 7.1 Metrics ringkas
+| Metric | Nilai |
+|---|---:|
+| Trades (close, main) | 62 |
+| Net PnL | **+17.13** |
+| Win rate | 48.39% |
+| Profit Factor | **1.067** |
+| Max Drawdown (kurva realized) | 81.56 |
+| Max Consecutive Losses | **6** |
+| BUY net (31 close) | +15.60 |
+| SELL net (31 close) | +1.53 |
+
+**Kesimpulan V10:** untuk pertama kali sejak V6, V10 **net positif dan PF > 1** — patch V9→V10 (early broker-side SL, ATR lot-scaling lebih ketat, SELL sizing lebih kecil) berhasil menstabilkan kerugian dan menyeimbangkan BUY vs SELL (V9: -1.38 vs -59.23 → V10: +15.60 vs +1.53). Namun dua masalah baru/berulang terlihat jelas di data terbaru:
+
+1. **`broker_side_close(sl_or_tp_hit)` masih grup terburuk**: 29 close, total **-148.79** (mendominasi seluruh gross loss). Baris `RECONCILED_BROKER_CLOSE` di Behavior CSV menunjukkan banyak di antaranya sempat **profit mengambang** sebelum berbalik kena SL -$8, contoh: `peak_profit=7.56 → pnl=-8.01`, `peak_profit=3.84 → pnl=-8.00`, `peak_profit=0.24 → pnl=-8.00`. Posisi ini tidak pernah mencapai `TrailStart_Dollar` ($8) sehingga trailing normal tidak sempat mengunci profit kecil itu — posisi dibiarkan bergerak penuh dari untung ke rugi maksimum.
+2. **Hard-stop beruntun terlalu agresif memblokir trading**: Behavior CSV mencatat `CONSEC_LOSS_HARD_STOP` pada 4, 5, dan 6 kerugian beruntun (17 Aug, jam 07:30–09:37), lalu `CONSEC_LOSS_FULL_DAY_STOP` pada 6 kerugian yang **menghentikan seluruh cycle baru hingga rollover kalender berikutnya (00:00)** — bukan sampai kondisi pasar benar-benar dikonfirmasi ulang. Ini membuang banyak jam trading produktif hanya berdasarkan hitungan loss beruntun, tanpa mengecek apakah arah pasar sudah berubah/valid kembali.
+
+## 8) Perubahan `EA_Breakout_OCO_V11.mq4` (patch berdasarkan analisis V10 + arahan pengguna)
+
+Basis: copy dari `EA_Breakout_OCO_V10.mq4`. Semua perubahan V11 murni penambahan lapisan risk-management; core breakout + OCO tidak diubah.
+
+### 8.1 [V11-01] "Minus Block" — force-close saat profit mau kembali minus (Priority 1)
+- Input baru: `UseMinusBlock=true`, `MinusBlock_ArmPeakMoney=3.00`, `MinusBlock_FloorMoney=2.00`.
+- Logika baru di `ExitDecisionEngine()`: begitu peak floating profit cycle berjalan sudah mencapai `MinusBlock_ArmPeakMoney`, posisi **wajib ditutup paksa** (`minus_block_force_close`) begitu profit turun ke `MinusBlock_FloorMoney` ($2) — sebelum sempat balik ke minus.
+- Ditempatkan **setelah** blok `tiered_profit_trail` yang sudah ada, sehingga untuk cycle yang peak-nya ≥ `TrailStart_Dollar` ($8), trailing normal tetap mendapat kesempatan pertama menutup posisi seperti biasa (**tidak berubah sama sekali**). Minus Block hanya mengisi celah untuk cycle dengan peak kecil (antara $3–$8) yang selama ini lolos dari semua guard dan berakhir kena SL -$8 seperti pola di §7.1.
+
+**Alasan:** langsung menyasar pola `RECONCILED_BROKER_CLOSE` (peak profit kecil → berbalik ke -$8) yang menjadi kontributor gross loss terbesar di log V10.
+
+### 8.2 [V11-02] Ganti hard-stop beruntun dengan "rescan arah" setelah 2 loss (Priority 1)
+- `UseHardStopConsecutiveLosses`: **true → false** (tetap tersedia sebagai opsi legacy).
+- `UseHardStopFullDay`: **true → false** (tetap tersedia sebagai opsi legacy).
+- Input baru: `UseRescanAfterLosses=true`, `RescanAfterLossesThreshold=2`.
+- Logika baru di loop utama (sebelum `PlaceOCOOrders`/`PlaceDirectionalOCO`): setelah 2 cycle rugi beruntun, EA mensyaratkan `GetFastConfirmDirection()` (konfirmasi tren cepat yang sudah ada) **sepakat** dengan tren utama sebelum OP berikutnya dibuka. Jika belum sepakat, cycle diblokir tick ini saja (`FILTER_BLOCK_RESCAN_DIRECTION`) dan dicoba ulang tick berikutnya — **tanpa** pause berjam-jam atau blokir sehari penuh. `CONSECUTIVE_LOSS_PAUSE` (cooldown pendek `MaxConsecutiveCycleLosses`) tetap berjalan independen seperti sebelumnya.
+
+**Alasan:** langsung menjawab pola di §7.1 poin 2 — EA sempat memblokir trading dari jam 09:37 hingga rollover kalender berikutnya hanya karena 6 loss beruntun, padahal arah pasar mungkin sudah berubah dan valid untuk entry baru jauh lebih cepat dari itu.
+
+### 8.3 Metadata/version update
+- File baru: `EA_Breakout_OCO_V11.mq4`
+- `#property version`: `11.0`
+- `MagicNumber`: `9001060 → 9001110`
+- `EA_Name`: `EA_Breakout_OCO_V11`
+- `CSV_FileName`: `EA_Breakout_OCO_V11_Behavior.csv`
+- `EA_INIT` log label: `V11`
+
+## 9) Kesimpulan EA V10 & Ringkasan V11
+
+**Kesimpulan V10:** V10 adalah versi pertama yang net profitable (+17.13, PF 1.07) dengan BUY/SELL yang jauh lebih seimbang dibanding V9, membuktikan pendekatan early broker-side SL + ATR lot-scaling + SELL sizing lebih kecil efektif. Kelemahan yang tersisa bukan pada arah/entry, melainkan **manajemen exit untuk profit kecil** (posisi profit tipis yang dibiarkan berbalik penuh ke -$8) dan **respons berlebihan terhadap loss beruntun** (hard-stop/full-day-stop yang memblokir trading berjam-jam tanpa validasi ulang kondisi pasar).
+
+**V11** menutup kedua celah tersebut secara terarah dan minimal: menambahkan "Minus Block" sebagai jaring pengaman profit-kecil tanpa mengubah trailing yang sudah bekerja baik, dan mengganti hard-stop panjang dengan gerbang "rescan arah" 2-loss yang jauh lebih responsif terhadap perubahan kondisi pasar.
