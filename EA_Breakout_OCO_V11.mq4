@@ -169,7 +169,10 @@ input bool     UseTrendFilter            = true;
 input int      TrendFilterMethod         = 0;
 input bool     UseMainEntryADXFilter     = true;
 input double   MainEntryMinADX           = 20.0;   
-input double   SellEntryExtraADX         = 5.0;    // [V9-01] Stricter SELL confirmation based on V7.1a/V8 SELL underperformance
+input double   SellEntryExtraADX         = 5.0;    // [V9-01] Default/MANUAL value. Overridden per-preset via
+                                                    // P_SellEntryExtraADX (CONSERVATIVE=5.0, BALANCED=3.5,
+                                                    // AGGRESSIVE=2.0) [Tuning] so AGGRESSIVE's relaxed ADX
+                                                    // gate isn't silently negated on SELL signals.
 input int      Trend_Timeframe           = PERIOD_M5;
 input int      FastEMA                   = 20;
 input int      SlowEMA                   = 50;
@@ -486,6 +489,7 @@ double     P_PyramidMinATRMult;
 double     P_PyramidMaxATRMult;
 double     P_AdaptiveADXStepPerLoss;
 double     P_MaxAdaptiveADXAdd;
+double     P_SellEntryExtraADX;
 int        P_RestartDelaySeconds;
 int        P_ConsecutiveLossPauseSec;
 int        P_MaxConsecutiveCycleLosses;
@@ -3050,6 +3054,7 @@ void ApplyPreset()
    P_PyramidMaxATRMult         = PyramidMaxATRMult;
    P_AdaptiveADXStepPerLoss    = AdaptiveADXStepPerLoss;
    P_MaxAdaptiveADXAdd         = MaxAdaptiveADXAdd;
+   P_SellEntryExtraADX         = SellEntryExtraADX; // MANUAL mode value; overridden below for presets 1-3
    P_RestartDelaySeconds       = RestartDelaySeconds;
    P_ConsecutiveLossPauseSec   = ConsecutiveLossPauseSec;
    P_MaxConsecutiveCycleLosses = MaxConsecutiveCycleLosses;
@@ -3079,7 +3084,7 @@ void ApplyPreset()
       P_RiskPercent=0.75; P_AutoLotPer1000=0.07;
       P_MainEntryMinADX=25.0; P_RSI_Oversold=25.0; P_RSI_Overbought=75.0; 
       P_PyramidMinADX=25.0; P_PyramidMinATRMult=0.80; P_PyramidMaxATRMult=1.20;
-      P_AdaptiveADXStepPerLoss=3.0; P_MaxAdaptiveADXAdd=6.0;
+      P_AdaptiveADXStepPerLoss=3.0; P_MaxAdaptiveADXAdd=6.0; P_SellEntryExtraADX=5.0;
       P_RestartDelaySeconds=300; P_ConsecutiveLossPauseSec=900; P_MaxConsecutiveCycleLosses=2;
       P_TrendMinSepATRMult=0.20; P_FastConfirm_MinSepATRMult=0.20;
       P_MinATR_Dollar=2.0; P_MaxSpreadPoints=50; P_PendingExpireMinutes=15; // [V9.1-01]
@@ -3098,7 +3103,7 @@ void ApplyPreset()
       P_RiskPercent=1.00; P_AutoLotPer1000=0.10;
       P_MainEntryMinADX=22.0; P_RSI_Oversold=20.0; P_RSI_Overbought=80.0; 
       P_PyramidMinADX=22.0; P_PyramidMinATRMult=0.55; P_PyramidMaxATRMult=1.30;
-      P_AdaptiveADXStepPerLoss=2.0; P_MaxAdaptiveADXAdd=6.0;
+      P_AdaptiveADXStepPerLoss=2.0; P_MaxAdaptiveADXAdd=6.0; P_SellEntryExtraADX=3.5;
       P_RestartDelaySeconds=300; P_ConsecutiveLossPauseSec=900; P_MaxConsecutiveCycleLosses=3;
       P_TrendMinSepATRMult=0.15; P_FastConfirm_MinSepATRMult=0.12;
       P_MinATR_Dollar=2.0; P_MaxSpreadPoints=50; P_PendingExpireMinutes=30;
@@ -3118,7 +3123,7 @@ void ApplyPreset()
       P_RiskPercent=1.50; P_AutoLotPer1000=0.15;
 
       // Entry gates - Relaxed
-      P_MainEntryMinADX       = 22.0; 
+      P_MainEntryMinADX       = 18.0; 
       P_RSI_Oversold          = 15.0; 
       P_RSI_Overbought        = 85.0; 
       P_PyramidMinADX         = 20.0; 
@@ -3126,13 +3131,15 @@ void ApplyPreset()
       P_PyramidMaxATRMult     = 1.60;
       P_AdaptiveADXStepPerLoss= 1.0;  
       P_MaxAdaptiveADXAdd     = 4.0;  
+      P_SellEntryExtraADX     = 2.0;  // [Tuning] was global 5.0; kept AGGRESSIVE ADX gate from being
+                                      // silently raised back to CONSERVATIVE/BALANCED levels on SELL
 
       // Frequency
       P_RestartDelaySeconds       = 300;
       P_ConsecutiveLossPauseSec   = 900;
       P_MaxConsecutiveCycleLosses = 3;
 
-      P_TrendMinSepATRMult        = 0.15;
+      P_TrendMinSepATRMult        = 0.10;
       P_FastConfirm_MinSepATRMult = 0.10;
       P_MinATR_Dollar             = 2.5;
       P_MaxSpreadPoints           = 50; // [V9.1-01]
@@ -3587,7 +3594,7 @@ void OnTick()
       if(P_UseAdaptiveADXOnLosses && g_consecutiveLosses > 0)
          effectiveMinADX += MathMin(g_consecutiveLosses * P_AdaptiveADXStepPerLoss, P_MaxAdaptiveADXAdd);
       // [V8-03] SELL was the weaker setup in V6/V7 logs (avg -0.64/-11.53 vs BUY +5.27/+2.14): require extra ADX strength.
-      if(trend == -1) effectiveMinADX += SellEntryExtraADX;
+      if(trend == -1) effectiveMinADX += P_SellEntryExtraADX;
       if(adxMain < effectiveMinADX)
       { g_state = STATE_BLOCKED_BY_FILTER;
         g_lastBlockReason = StringFormat("ADX_WEAK_MAIN (adx=%.1f min=%.1f%s)", adxMain, effectiveMinADX,
