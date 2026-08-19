@@ -2783,6 +2783,7 @@ bool ExitDecisionEngine()
 
    bool hedgeActiveNow = (g_hedgeTicket > 0 && OrderSelect(g_hedgeTicket, SELECT_BY_TICKET) &&
                          (OrderType() == OP_BUY || OrderType() == OP_SELL) && OrderCloseTime() == 0);
+   double effectiveEarlyLossCap = hedgeActiveNow ? P_EarlyLossCut_MaxLoss_WhileHedged : EarlyLossCut_MaxLoss;
 
    // [V12-01] Shallow Minus Block: catches cycles whose peak floating profit never reached the
    // original MinusBlock_ArmPeakMoney tier (e.g. $0.2-$2.9, as seen in 10/12 V11 RECONCILED_BROKER_CLOSE
@@ -2790,14 +2791,16 @@ bool ExitDecisionEngine()
    // profit drops to MinusBlockShallow_FloorMoney - well before the deep-loss guards below
    // (early_loss_cut/v1d_profit_to_loss/emergency_loss) would otherwise let it slide all the way
    // down to the -$6/-$8 floor. Scoped to g_peakProfitMoney < MinusBlock_ArmPeakMoney so it never
-   // overlaps with the original (unchanged) Minus Block tier below.
+   // overlaps with the original (unchanged) Minus Block tier below. The lower bound
+   // (profit >= -effectiveEarlyLossCap * 0.5) keeps this strictly in the small-loss/near-breakeven
+   // range it is designed for, so it never races with or shadows the early_loss_cut exit below.
    if(UseMinusBlockShallow && g_peakProfitMoney >= MinusBlockShallow_ArmPeakMoney &&
-      g_peakProfitMoney < MinusBlock_ArmPeakMoney && profit <= MinusBlockShallow_FloorMoney)
+      g_peakProfitMoney < MinusBlock_ArmPeakMoney && profit <= MinusBlockShallow_FloorMoney &&
+      profit >= -(effectiveEarlyLossCap * 0.5))
    { g_exitRequested = true; g_exitReason = "minus_block_shallow_force_close";
      LogEvent("EXIT_MINUS_BLOCK_SHALLOW", StringFormat("profit=%.2f peak=%.2f floor=%.2f", profit, g_peakProfitMoney, MinusBlockShallow_FloorMoney));
      if(CloseAllPositions(g_exitReason)) { g_state = STATE_RESET; g_exitRequested = false; return true; } }
 
-   double effectiveEarlyLossCap = hedgeActiveNow ? P_EarlyLossCut_MaxLoss_WhileHedged : EarlyLossCut_MaxLoss;
    if(UseEarlyLossCut && g_peakProfitMoney < EarlyLossCut_NoPeakAbove && profit <= -effectiveEarlyLossCap)
    { g_exitRequested = true; g_exitReason = "early_loss_cut";
      LogEvent("EXIT_EARLY_LOSS_CUT", StringFormat("profit=%.2f peak=%.2f cap=%.2f", profit, g_peakProfitMoney, effectiveEarlyLossCap));
@@ -3151,7 +3154,7 @@ void ApplyPreset()
       P_UseAdaptiveADXOnLosses=true; P_UseFastTrendConfirm=true;
       P_UseReversalChaser=false; P_UseMeanReversionEntry=false; P_UseRangeBoundEntry=false;
       P_UseTrendFlipExit=false;
-      P_EarlyLossCut_MaxLoss_WhileHedged = 5.0; // [V12-02] was 8.0, aligned with new tightened default
+      P_EarlyLossCut_MaxLoss_WhileHedged = 5.0; // [V12-02] this preset override was 8.0 in V11, now aligned to the tightened 5.0 default
    }
    // ===== BALANCED (PresetMode==2) =====
    else if(PresetMode == 2)
@@ -3170,7 +3173,7 @@ void ApplyPreset()
       P_UseAdaptiveADXOnLosses=true; P_UseFastTrendConfirm=true;
       P_UseReversalChaser=false; P_UseMeanReversionEntry=false; P_UseRangeBoundEntry=false;
       P_UseTrendFlipExit=false;
-      P_EarlyLossCut_MaxLoss_WhileHedged = 5.0; // [V12-02] was 8.0, aligned with new tightened default
+      P_EarlyLossCut_MaxLoss_WhileHedged = 5.0; // [V12-02] this preset override was 8.0 in V11, now aligned to the tightened 5.0 default
    }
    // ===== AGGRESSIVE (PresetMode==3) — FILTER RELAXATION =====
    else if(PresetMode == 3)
@@ -3216,7 +3219,7 @@ void ApplyPreset()
       P_UseRangeBoundEntry        = false;
       P_UseTrendFlipExit          = false;
       
-      P_EarlyLossCut_MaxLoss_WhileHedged = 5.0; // [V12-02] was 8.0, aligned with new tightened default
+      P_EarlyLossCut_MaxLoss_WhileHedged = 5.0; // [V12-02] this preset override was 8.0 in V11, now aligned to the tightened 5.0 default
    }
 }
 
