@@ -367,7 +367,7 @@ input bool     AutoRestartCycle          = true;
 input int      RestartDelaySeconds       = 300;    
 input int      PendingExpireMinutes      = 20;
 input bool     EnableCSVLog              = true;
-input string   CSV_FileName              = "EA_Breakout_OCO_V11_Behavior.csv";
+input string   CSV_FileName              = "EA_Breakout_OCO_V12_Behavior.csv";
 input bool     EnforceSingleInstance     = true;
 
 // --- Pending trail ---
@@ -620,7 +620,7 @@ int        g_dailyLosses = 0;
 
 // --- Dashboard ---
 datetime   g_dashLastUpdate = 0;
-string     g_dashPrefix = "V11DASH_";
+string     g_dashPrefix = "V12DASH_";
 int        g_dashLineCount = 0;
 
 //============================== HELPERS ==============================
@@ -3151,7 +3151,7 @@ void ApplyPreset()
       P_UseAdaptiveADXOnLosses=true; P_UseFastTrendConfirm=true;
       P_UseReversalChaser=false; P_UseMeanReversionEntry=false; P_UseRangeBoundEntry=false;
       P_UseTrendFlipExit=false;
-      P_EarlyLossCut_MaxLoss_WhileHedged = 8.0;
+      P_EarlyLossCut_MaxLoss_WhileHedged = 5.0; // [V12-02] was 8.0, aligned with new tightened default
    }
    // ===== BALANCED (PresetMode==2) =====
    else if(PresetMode == 2)
@@ -3170,7 +3170,7 @@ void ApplyPreset()
       P_UseAdaptiveADXOnLosses=true; P_UseFastTrendConfirm=true;
       P_UseReversalChaser=false; P_UseMeanReversionEntry=false; P_UseRangeBoundEntry=false;
       P_UseTrendFlipExit=false;
-      P_EarlyLossCut_MaxLoss_WhileHedged = 8.0;
+      P_EarlyLossCut_MaxLoss_WhileHedged = 5.0; // [V12-02] was 8.0, aligned with new tightened default
    }
    // ===== AGGRESSIVE (PresetMode==3) — FILTER RELAXATION =====
    else if(PresetMode == 3)
@@ -3216,7 +3216,7 @@ void ApplyPreset()
       P_UseRangeBoundEntry        = false;
       P_UseTrendFlipExit          = false;
       
-      P_EarlyLossCut_MaxLoss_WhileHedged = 8.0;
+      P_EarlyLossCut_MaxLoss_WhileHedged = 5.0; // [V12-02] was 8.0, aligned with new tightened default
    }
 }
 
